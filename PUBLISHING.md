@@ -15,13 +15,20 @@ git-based distribution:
 dsh plugin --profile web add ../dsh-web-file-uploader
 
 # Git repository (recommended for distribution)
-dsh plugin --profile web add github.com/Mooling0602/dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 # Tarball
 dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
 
 # npm registry (requires publishing, see below)
 dsh plugin --profile web add dsh-web-file-uploader
+```
+
+> **Git spec note**: pnpm's git shorthand is `github:<owner>/<repo>`; a bare
+> `github.com/<owner>/<repo>` is treated as a local directory and fails with a
+> "non-existent directory" warning. Alternatives:
+> `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` or
+> `https://github.com/Mooling0602/dsh-web-file-uploader.git`.
 ```
 
 After installing, **restart the dsh web process** and refresh the page.
@@ -38,6 +45,28 @@ After installing, **restart the dsh web process** and refresh the page.
   emulation of the DSH web toolchain output. **Verify it against the real web
   build before distributing** (compare with a shipped
   `@deepseek-ai/dsh-client-*` `lib/client.js`).
+
+### Troubleshooting: `ERR_PNPM_UNEXPECTED_STORE`
+
+If `dsh plugin --profile web add <package>` fails with
+`ERR_PNPM_UNEXPECTED_STORE` ("Unexpected store location"), it is **not a
+plugin issue** — it is a pnpm store-version mismatch in the web profile:
+
+- The profile's `node_modules` was installed by a different pnpm major version
+  (e.g. pnpm 10) than the one currently on `PATH` (e.g. pnpm 11). Any `pnpm`
+  operation in that profile fails the same way, for any package — it fires
+  before dependency resolution.
+- Fix: migrate the profile to the current pnpm store:
+
+  ```bash
+  # allow non-interactive module purge, then migrate
+  printf 'confirmModulesPurge=false\n' >> ~/.dsh/profiles/web/.npmrc
+  cd ~/.dsh/profiles/web && pnpm install
+  ```
+
+  Afterwards `dsh plugin --profile web add <package>` works again. Fresh users
+  (no existing profile) never hit this — the profile is initialized with the
+  current pnpm.
 
 ## Publishing to the npm registry (optional)
 

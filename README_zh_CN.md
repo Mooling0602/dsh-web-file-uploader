@@ -89,7 +89,7 @@ cordis_define + cordis_run   # host = src/host.js，client = src/client.js
 
 ```bash
 # Git 仓库（推荐分发渠道）
-dsh plugin --profile web add github.com/Mooling0602/dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 # 本地目录（开发用）
 dsh plugin --profile web add ../dsh-web-file-uploader
@@ -100,6 +100,12 @@ dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
 # npm registry（发布后）
 dsh plugin --profile web add dsh-web-file-uploader
 ```
+
+> **Git 规格说明**：pnpm 的 git 简写是 `github:<owner>/<repo>`（如
+> `github:Mooling0602/dsh-web-file-uploader`）。裸写 `github.com/<owner>/<repo>`
+> 会被 pnpm 当作*本地目录*，报 "non-existent directory" 警告。其他合法形式：
+> `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` 或
+> `https://github.com/Mooling0602/dsh-web-file-uploader.git`。
 
 重启 dsh web 进程并刷新页面。分发细节与可选的 npm 发布流程（需要你的 npm 凭据）见 [PUBLISHING.md](PUBLISHING.md)。
 

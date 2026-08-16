@@ -124,7 +124,7 @@ pnpm-supported source works:
 
 ```bash
 # Git repository (recommended distribution channel)
-dsh plugin --profile web add github.com/Mooling0602/dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 # Local directory (development)
 dsh plugin --profile web add ../dsh-web-file-uploader
@@ -135,6 +135,13 @@ dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
 # npm registry (after publishing)
 dsh plugin --profile web add dsh-web-file-uploader
 ```
+
+> **Git spec note**: pnpm's git shorthand is `github:<owner>/<repo>` (e.g.
+> `github:Mooling0602/dsh-web-file-uploader`). A bare `github.com/<owner>/<repo>`
+> is treated by pnpm as a *local directory* and will fail with a
+> "non-existent directory" warning. Other valid forms:
+> `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` or
+> `https://github.com/Mooling0602/dsh-web-file-uploader.git`.
 
 Restart the dsh web process and refresh the page. See
 [PUBLISHING.md](PUBLISHING.md) for distribution details and the optional npm
