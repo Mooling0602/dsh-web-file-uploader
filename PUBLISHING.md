@@ -121,6 +121,48 @@ jobs:
 
 Tag a release (`git tag v0.2.0 && git push --tags`) to trigger it.
 
+## Update
+
+`dsh plugin --profile web <args>` is a forwarder: it runs `pnpm <args>` inside
+the web profile directory, so any pnpm management verb works. Never edit
+`~/.dsh/profiles/web/node_modules/dsh-web-file-uploader` by hand — pnpm owns
+that tree and the next operation rewrites it.
+
+### Git channel (recommended)
+
+```bash
+# re-resolve the git spec to the newest commit of its default branch
+# (forwarded to `pnpm update dsh-web-file-uploader`)
+dsh plugin --profile web update dsh-web-file-uploader
+
+# if the lockfile-pinned resolution refuses to move, fall back to a clean
+# remove + add
+dsh plugin --profile web remove dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
+```
+
+### Local-directory channel
+
+The checkout must be rebuilt before each `add` — `lib/client.js` is a build
+artifact and only `src/` + templates live in git:
+
+```bash
+cd <path-to-checkout> && pnpm build   # regenerates lib/ + client/src
+dsh plugin --profile web add ../dsh-web-file-uploader
+```
+
+### Verify and restart
+
+```bash
+dsh plugin --profile web ls dsh-web-file-uploader   # installed version
+```
+
+Restart the dsh web process and refresh the page afterwards. The client
+bundle is served as `/plugins/dsh-web-file-uploader/client.js?rev=<short
+hash>` where `rev` is the content hash of `lib/client.js`, so a changed
+bundle automatically busts the browser cache once the server recomposes its
+boot manifest — no manual cache clearing is needed.
+
 ## Uninstall
 
 ```bash

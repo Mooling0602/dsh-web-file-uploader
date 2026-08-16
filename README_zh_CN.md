@@ -109,6 +109,20 @@ dsh plugin --profile web add dsh-web-file-uploader
 
 重启 dsh web 进程并刷新页面。分发细节与可选的 npm 发布流程（需要你的 npm 凭据）见 [PUBLISHING.md](PUBLISHING.md)。
 
+### 更新
+
+`dsh plugin` 只是把参数转发给 profile 目录下的 pnpm，因此更新也走它（不要手改
+`~/.dsh/profiles/web/node_modules`——下次 pnpm 操作会直接覆盖）：
+
+```bash
+dsh plugin --profile web update dsh-web-file-uploader
+# 若 lockfile 钉住的解析不肯移动，可以退回重装：
+dsh plugin --profile web remove dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
+```
+
+更新后重启 dsh web 进程；浏览器端 bundle URL 自带内容哈希版本号（`?rev=…`），刷新页面即可拿到新构建，无需手动清缓存。本地目录安装则在重新 add 前先在源码目录跑一次 `pnpm build`。详见 [PUBLISHING.md](PUBLISHING.md#update)。
+
 ## 架构
 
 ```

@@ -147,6 +147,24 @@ Restart the dsh web process and refresh the page. See
 [PUBLISHING.md](PUBLISHING.md) for distribution details and the optional npm
 publish flow (requires your npm credentials).
 
+### Update
+
+`dsh plugin` forwards to pnpm in the profile directory, so update through it
+(never edit `~/.dsh/profiles/web/node_modules` by hand — the next pnpm
+operation rewrites it):
+
+```bash
+dsh plugin --profile web update dsh-web-file-uploader
+# or, if the lockfile-pinned resolution refuses to move:
+dsh plugin --profile web remove dsh-web-file-uploader
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
+```
+
+Restart the dsh web process afterwards; the served bundle URL carries a
+content-hash revision (`?rev=…`) so the browser picks up the new build on
+refresh. For local-directory installs, run `pnpm build` in the checkout
+before re-adding it. Details: [PUBLISHING.md](PUBLISHING.md#update).
+
 ## Architecture
 
 ```
