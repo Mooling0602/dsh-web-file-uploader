@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Distribution artifacts
+*.tgz
+*.tar.gz
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Runtime / diagnostic artifacts (should never be committed)
+.dfu-*
+uploads/
+.dsh-vision-toolkit/

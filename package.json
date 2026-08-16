@@ -1,0 +1,57 @@
+{
+  "name": "dsh-web-file-uploader",
+  "version": "0.2.0",
+  "private": false,
+  "description": "A DeepSeek-style paperclip attach button in the DSH web composer; uploads files to the DSH host (model-aware: native image blocks for multimodal models, file paths for text-only models).",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "cordis",
+    "web",
+    "upload",
+    "attachment"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "src/core",
+    "src/seams",
+    "client/src",
+    "scripts",
+    "README.md",
+    "README_zh_CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:dynamic": "node scripts/build-dynamic.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "build": "node scripts/build-dynamic.mjs && node scripts/build-client.mjs",
+    "prepublishOnly": "node scripts/build-dynamic.mjs && node scripts/build-client.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}

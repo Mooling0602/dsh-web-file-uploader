@@ -1,0 +1,14 @@
+# dsh-web-file-uploader bundle patch.
+#
+# This patch is referenced by package.json `dsh.bundle.patch`. When the
+# package is installed with `dsh plugin --profile web add <package>`, the CLI
+# recognizes the `dsh.bundle` declaration, runs pnpm, and appends this package
+# to the web profile's layer stack; the row below then loads the host half
+# (lib/index.js) as an ordinary Cordis plugin. The browser half rides the
+# `dsh.client` scan (client/src/client.js, built to lib/client.js).
+#
+# Format mirrors @deepseek-ai/dsh-web-app/cordis.patch.yml.
+
+- insert:
+    - id: dsh-web-file-uploader
+      name: 'dsh-web-file-uploader'
