@@ -426,10 +426,16 @@ const ensureStyles = (() => {
   }
 })()
 
-// The build wrapper (scripts/build-client.mjs) injects `react = require("react")`
-// at the top of the __ModuleLoader__ factory. Keep this source free of ESM
-// imports so the wrapper can inline it verbatim.
-let react = null
+// The build wrapper (scripts/build-client.mjs) replaces the marked line below
+// with `let react = require("react")` (resolved by the web module loader's
+// module map). Standalone (unwrapped) consumers keep the null fallback and
+// apply() becomes a no-op. The marker is load-bearing: injecting a plain
+// `react = require("react")` at the top of the factory cannot work — this
+// `let` declaration sits in the same function scope, so the early assignment
+// throws "Cannot access 'react' before initialization" (TDZ), and a `var`
+// here would instead reset the binding back to null after the injection.
+// Keep this source free of ESM imports so the wrapper can inline it verbatim.
+let react = null // __REACT__
 
 export const inject = []
 
