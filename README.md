@@ -14,7 +14,8 @@ re-uploads.
 ## Features
 
 - 📎 Paperclip attach button in the composer tool row (thin line, circular
-  hover background `#3D3D3E`, matching the toolbar controls)
+  theme-aware hover background via `--dsw-alias-interactive-bg-hover`,
+  light ≈ `#F2F3F4` / dark ≈ white 8%)
 - Multi-file selection with **preview-style attachment cards** (image
   thumbnails) in the dock above the composer: reading → uploading → saved,
   with copy-path and remove buttons

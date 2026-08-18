@@ -16,3 +16,6 @@ Thumbs.db
 .dfu-*
 uploads/
 .dsh-vision-toolkit/
+
+# no deps (DI design); avoid empty lockfile noise
+pnpm-lock.yaml

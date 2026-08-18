@@ -309,7 +309,9 @@ export function createClientCore(deps) {
   cursor: pointer; user-select: none; flex: none;
 }
 .dfu-attach:hover {
-  background: #3D3D3E;
+  /* theme-aware hover background: light => #F2F3F4 (rgba(38,49,72,.06) over white),
+     dark => rgba(255,255,255,.08) via body[data-ds-dark-theme] token swap */
+  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, .06));
   color: var(--dsw-alias-label-primary, #333);
 }
 .dfu-dock {
