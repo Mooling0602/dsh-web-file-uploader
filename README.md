@@ -34,8 +34,16 @@ composer. The cards are the source of truth for injection:
 | State | Behavior |
 |---|---|
 | Card present | The file's absolute path is injected into **every** user message sent while the card is visible |
-| Card closed (`×`) | The plugin calls the host `remove` RPC — the file is dropped from the pending registry and **no longer injected** |
+| Card closed (`×`) | The plugin calls the host `remove` RPC — the file is dropped from the pending registry, **no longer injected**, and the file is **kept on disk** so the model can still re-read it from the uploads folder |
+| Card deleted (🗑) | The plugin calls the host `delete` RPC — the file is **permanently removed from the DSH host** and the dedup index is scrubbed |
 | Ctrl+V paste | Pasted images ride the native draft-image pipeline — no card is created and the plugin never touches them |
+
+The distinction between `×` and 🗑 is intentional: `×` just stops injecting
+(you might want the model to find the file later), while 🗑 is a statement that
+you are **done with the file forever**. Deleting the last reference to a file
+removes it from disk; if another live session still references the same
+deduplicated copy, the file is kept and only this session's reference is
+dropped.
 
 This is a deliberate design decision: the cards persist after sending (unlike
 paste previews that clear on send), so you decide how long a file stays
@@ -97,6 +105,51 @@ Re-uploads cannot flood storage:
 | Same content, different filename | Reuses the first stored copy |
 | Same name, different content | Normal `-1` collision handling (correct) |
 | Process restart | The index file persists, dedup keeps working |
+
+The index entry is `hash → { path, at }` where `at` is the upload timestamp
+(epoch ms) used by the TTL cleanup below. Legacy `hash → path` entries are read
+transparently and upgraded to the object form on the next write; legacy entries
+carrying no timestamp are never reclaimed by TTL (only scrubbed when the file
+is gone).
+
+## Cleanup & retention (TTL GC + manual delete)
+
+Uploaded files are reclaimed in two complementary ways:
+
+### Automatic TTL garbage collection
+
+Every upload, every permanent delete, and plugin start trigger a **lazy sweep**
+(after the success). Files older than the TTL that are **not** referenced by
+any live session's pending set are removed from disk and their index entries
+are dropped. Sweeps run on the same serialized queue as uploads, so they never
+race in-flight writes; no background task is required.
+
+- **Default TTL**: `7d` (7 days).
+- **Retention units**: `1s` (seconds), `1m` (minutes), `1h` (hours), `1d`
+  (days); a bare number with no unit is treated as days (legacy behavior).
+  `0` (or an empty/invalid value) **disables automatic GC** — files are only
+  removed when you explicitly click 🗑.
+- **Configure** in **Settings → File uploads** (native DSH settings panel) —
+  a single field that persists via the `settings` service namespace
+  `dsh-web-file-uploader` (`{ ttl }`). The environment variable
+  `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a fallback before
+  the default. In dynamic (session) mode the setting lives in memory; in the
+  static bundle it persists through the settings document.
+
+Files whose timestamp is unknown (legacy index entries) are never auto-removed,
+protecting pre-existing uploads from being deleted on migration.
+
+### Two card actions (recap)
+
+| Action | Host call | File on disk |
+|---|---|---|
+| `×` close | `remove` | **Kept** — model may re-read it |
+| 🗑 delete | `delete` | **Removed permanently** |
+
+The `delete` host call drops this session's reference, checks that no other
+live session references the same deduplicated copy, and only then unlinks the
+file and scrubs the index. If another session still references it, the file is
+kept (`removed: false`) but this session's card is still cleared.
 
 ## Attachment size limits
 
@@ -179,7 +232,11 @@ conversation.input.left                   harness.handle('upload', …)   [dynam
                               ▼           └ base64 -d (stdin) / node:fs write
 conversation.input.dock
   └ attachment cards (persist)            harness.handle('remove', …) / remove route
-       └ × closes card → stop injecting     └ pending entry deleted
+       └ × closes card → stop injecting     └ pending entry deleted (file kept)
+       └ 🗑 deletes card                  harness.handle('delete', …) / delete route
+                                              └ pending dropped → unlink + index scrub
+                                           lazy TTL sweep (upload / delete / start)
+                                              └ remove files past TTL, not in pending
                                           agent/pre-step waterfall
                                              ├ resolveModelInfo → multimodal?
                                              ├ attachments.saveImage → ImageBlock
@@ -198,7 +255,9 @@ losslessly with no temp files.
 | Dynamic plugin | `<session workspace>/uploads/` (sandboxed shell/fs cannot leave the workspace) |
 | Static bundle | `$DSH_HOME/uploads` (default `~/.dsh/uploads`) via `node:fs` — the dsh data directory |
 
-The dedup index (`uploads/.dfu-index.json`) lives next to the stored files.
+The dedup index (`uploads/.dfu-index.json`) lives next to the stored files and
+maps `hash → { path, at }` (see [Deduplication](#deduplication) and
+[Cleanup & retention](#cleanup--retention-ttl-gc--manual-delete)).
 
 ## Repository layout
 

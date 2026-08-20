@@ -25,6 +25,27 @@ return {
       }
     }
 
+    // Config for the settings UI. Dynamic mode keeps the value in memory for the
+    // session (no schema registry), overlaid over env / optional settings.
+    let runtimeTtl = '7d'
+    const getConfig = () => {
+      const settings = ctx.get('settings')
+      let ttl
+      if (settings !== undefined) {
+        try {
+          const v = settings.get('dsh-web-file-uploader')
+          if (v && typeof v === 'object' && typeof v.ttl === 'string' && v.ttl !== '') ttl = v.ttl
+        } catch {
+          // fall through
+        }
+      }
+      if ((ttl === undefined || ttl === '') && typeof process !== 'undefined' && process.env && process.env.DSH_UPLOAD_TTL) {
+        ttl = process.env.DSH_UPLOAD_TTL
+      }
+      if (ttl === undefined || ttl === '') ttl = runtimeTtl
+      return { ttl }
+    }
+
     const core = createHostCore({
       uploadsRoot: async (sessionId) => {
         const policy = sandboxPolicy.resolve()
@@ -95,6 +116,36 @@ return {
         const target = await fs.resolve(absPath)
         await fs.writeText(target, content, undefined, undefined, policy)
       },
+      deleteFile: async (absPath) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'rm -f ' + shellQuote(absPath),
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          return result.exitCode === 0 ? { ok: true } : { ok: false, error: 'delete failed (exit ' + result.exitCode + ')' }
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) }
+        }
+      },
+      listUploadRoots: async () => {
+        const roots = new Set()
+        const ws = sandboxPolicy.workspaceRoot
+        if (ws) roots.add(ws)
+        if (sessions !== undefined) {
+          try {
+            for (const s of sessions.list()) {
+              const cwd = s && s.header && s.header.cwd
+              if (typeof cwd === 'string' && cwd) roots.add(cwd)
+            }
+          } catch {
+            // ignore
+          }
+        }
+        return Array.from(roots)
+      },
+      readConfig: getConfig,
       resolveModelInfo: (provider, model, signal) => (llm !== undefined ? llm.resolveModelInfo(provider, model, signal) : Promise.reject(new Error('llm unavailable'))),
       attachmentLimits: () => (attachments !== undefined && attachments.imageLimits ? attachments.imageLimits : null),
       saveImage: (input) => attachments.saveImage(input),
@@ -103,6 +154,20 @@ return {
 
     harness.handle('upload', (args) => core.upload(args))
     harness.handle('remove', (args) => core.remove(args))
+    harness.handle('delete', (args) => core.delete(args))
+    harness.handle('dfu-config-get', () => getConfig())
+    harness.handle('dfu-config-set', (args) => {
+      const raw = args && typeof args.ttl === 'string' ? args.ttl : ''
+      runtimeTtl = raw.trim()
+      return getConfig()
+    })
     ctx.on('agent/pre-step', (payload, next) => core.preStep(payload, next))
+
+    // Startup sweep: reclaim anything already past TTL when the plugin mounts.
+    try {
+      core.collect()
+    } catch {
+      // non-fatal
+    }
   },
 }

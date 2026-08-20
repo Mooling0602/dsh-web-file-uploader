@@ -14,15 +14,20 @@
 //   readBytes(absPath, maxBytes, signal?) -> Promise<Uint8Array | null>
 //   readTextFile(absPath) -> Promise<string | null>
 //   writeTextFile(absPath, content) -> Promise<void>
+//   deleteFile(absPath) -> Promise<{ ok: boolean; error?: string }>   PHYSICAL delete
+//   listUploadRoots() -> Promise<string[]>             base dirs whose /uploads to GC
+//   readConfig() -> { ttlDays: number }                TTL config (0 => disabled)
 //   resolveModelInfo(provider, model, signal?) -> Promise<{ inputModalities?: readonly string[] }>
 //   attachmentLimits() -> { mediaTypes: string[]; maxImageBytes: number } | null
 //   saveImage({ data, mediaType, name }) -> Promise<unknown>  ImageAttachmentRef
 //   probe(line) -> void                                  diagnostics (no-op in release)
 //   log(...args) -> void
 //
-// Returns { upload, remove, preStep }:
+// Returns { upload, remove, delete, collect, preStep }:
 //   upload(args)   -> { ok, name, path, size, dedup? } | { ok:false, error }
-//   remove(args)   -> { ok }
+//   remove(args)   -> { ok }                                 (un-inject only, keep file)
+//   delete(args)   -> { ok, removed:boolean, reason?, path? }(permanent deletion)
+//   collect()      -> runs a lazy TTL sweep over every upload root
 //   preStep(payload, next) -> the (possibly replaced) pre-step decision
 //
 // NOTE: this file must stay free of `import`/`require` and of any sandbox-only
@@ -34,6 +39,7 @@ export function createHostCore(deps) {
   const PENDING_CAP = 100
   const MAX_BASE64_LENGTH = 64 * 1024 * 1024
   const MODALITY_TTL = 10 * 60 * 1000
+  const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
   // Serialize uploads so the hash check + write + index update never race.
   let uploadQueue = Promise.resolve()
@@ -45,6 +51,41 @@ export function createHostCore(deps) {
 
   const log = deps.log || ((...a) => {})
   const probe = deps.probe || (() => {})
+
+  // --- configuration ----------------------------------------------------------
+
+  // Parse a retention duration. Accepts:
+  //   "0" / ""           -> disabled (never auto-clean)
+  //   "7" (no unit)      -> days (legacy ttlDays semantics)
+  //   "30m" "2h" "1d" "45s" -> seconds/minutes/hours/days
+  //   any other string   -> 0 (safe: never auto-clean rather than delete early)
+  const parseTtl = (raw) => {
+    if (raw === undefined || raw === null) return 0
+    const s = String(raw).trim()
+    if (s === '' || s === '0') return 0
+    const m = /^(\d+(?:\.\d+)?)\s*([smhd])?$/i.exec(s)
+    if (!m) return 0
+    const n = parseFloat(m[1])
+    const unit = (m[2] || 'd').toLowerCase()
+    const mult = unit === 's' ? 1000 : unit === 'm' ? 60000 : unit === 'h' ? 3600000 : 86400000
+    return n * mult
+  }
+
+  const ttlMs = () => {
+    let raw = '7d'
+    if (typeof deps.readConfig === 'function') {
+      try {
+        const cfg = deps.readConfig()
+        if (cfg && typeof cfg === 'object') {
+          const v = cfg.ttl !== undefined ? cfg.ttl : cfg.ttlDays
+          if (v !== undefined && v !== null && v !== '') raw = v
+        }
+      } catch {
+        // ignore and keep default
+      }
+    }
+    return parseTtl(raw)
+  }
 
   const sanitizeName = (raw) => {
     const n = String(raw || '').replace(/[\/\\\0]/g, '_').trim()
@@ -60,12 +101,25 @@ export function createHostCore(deps) {
 
   const indexPath = (uploadsDir) => uploadsDir + '/.dfu-index.json'
 
+  // .dfu-index.json maps hash -> { path, at } (at = upload epoch ms).
+  // Legacy entries (hash -> path string) are migrated in memory to { path, at: 0 };
+  // at === 0 means "time unknown" and is never reclaimed by TTL.
   const loadIndex = async (uploadsDir) => {
     try {
       const text = await deps.readTextFile(indexPath(uploadsDir))
       if (text === null) return {}
       const parsed = JSON.parse(text)
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const out = {}
+      for (const k of Object.keys(parsed)) {
+        const v = parsed[k]
+        if (typeof v === 'string') {
+          out[k] = { path: v, at: 0 }
+        } else if (v && typeof v === 'object' && typeof v.path === 'string') {
+          out[k] = { path: v.path, at: Number.isFinite(v.at) ? v.at : 0 }
+        }
+      }
+      return out
     } catch {
       return {}
     }
@@ -76,6 +130,46 @@ export function createHostCore(deps) {
       await deps.writeTextFile(indexPath(uploadsDir), JSON.stringify(index))
     } catch (err) {
       log('dfu index save failed:', err && err.message ? err.message : err)
+    }
+  }
+
+  // --- pending bookkeeping -----------------------------------------------------
+
+  function registerPending(sessionId, entry) {
+    if (!sessionId) return
+    let row = pending.get(sessionId)
+    if (!row) {
+      row = []
+      pending.set(sessionId, row)
+    }
+    if (row.length >= PENDING_CAP) row.shift()
+    row.push({
+      id: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
+      name: entry.name,
+      mime: entry.mime,
+      size: entry.size,
+      abs: entry.abs,
+    })
+  }
+
+  // Does ANY live session still hold a pending reference to this path?
+  // Used to protect dedup-shared copies from permanent deletion / TTL sweep.
+  function pendingRefs(absPath) {
+    if (!absPath) return false
+    for (const row of pending.values()) {
+      if (row && row.some((e) => e.abs === absPath)) return true
+    }
+    return false
+  }
+
+  function dropPendingRef(sessionId, absPath) {
+    const row = pending.get(sessionId)
+    if (row) {
+      const i = row.findIndex((e) => e.abs === absPath)
+      if (i >= 0) {
+        row.splice(i, 1)
+        if (row.length === 0) pending.delete(sessionId)
+      }
     }
   }
 
@@ -92,7 +186,8 @@ export function createHostCore(deps) {
       if (base64.length > MAX_BASE64_LENGTH) return { ok: false, error: 'file exceeds the ~48 MiB cap' }
       if (!/^[A-Za-z0-9+/=\s]+$/.test(base64)) return { ok: false, error: 'invalid base64 payload' }
 
-      const uploadsDir = await deps.uploadsRoot(sessionId) + '/uploads'
+      const uploadsBase = await deps.uploadsRoot(sessionId)
+      const uploadsDir = uploadsBase + '/uploads'
 
       // 1) Content hash (decoded bytes).
       const hash = await deps.hashBase64(base64)
@@ -103,11 +198,12 @@ export function createHostCore(deps) {
         const existing = index[hash]
         if (existing) {
           try {
-            const info = await deps.statPath(existing)
+            const info = await deps.statPath(existing.path)
             if (info) {
-              registerPending(sessionId, { name, mime, size: info.size !== undefined ? info.size : base64Size(base64), abs: existing })
-              probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing)
-              return { ok: true, name, path: existing, size: info.size !== undefined ? info.size : base64Size(base64), dedup: true }
+              const size = info.size !== undefined ? info.size : base64Size(base64)
+              registerPending(sessionId, { name, mime, size, abs: existing.path })
+              probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
+              return { ok: true, name, path: existing.path, size, dedup: true }
             }
           } catch {
             // index entry stale -> fall through and re-store
@@ -134,57 +230,194 @@ export function createHostCore(deps) {
       const written = await deps.saveUploadFile(base64, abs)
       if (!written.ok) return { ok: false, error: written.error || 'save failed' }
 
-      // 5) Record hash -> path so future re-uploads reuse this copy.
+      // 5) Record hash -> { path, at } so future re-uploads reuse this copy.
       if (hash) {
         const index = await loadIndex(uploadsDir)
         if (!index[hash]) {
-          index[hash] = abs
+          index[hash] = { path: abs, at: Date.now() }
           await saveIndex(uploadsDir, index)
         }
       }
 
       registerPending(sessionId, { name, mime, size: base64Size(base64), abs })
       probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId) || []).length)
+
+      // 6) Lazy GC after a fresh write.
+      try {
+        enqueue(() => gcForRoot(uploadsBase))
+      } catch {
+        // non-fatal
+      }
+
       return { ok: true, name, path: abs, size: base64Size(base64), dedup: false }
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) }
     }
   }
 
-  function registerPending(sessionId, entry) {
-    if (!sessionId) return
-    let row = pending.get(sessionId)
-    if (!row) {
-      row = []
-      pending.set(sessionId, row)
-    }
-    if (row.length >= PENDING_CAP) row.shift()
-    row.push({
-      id: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
-      name: entry.name,
-      mime: entry.mime,
-      size: entry.size,
-      abs: entry.abs,
-    })
-  }
-
-  // --- remove ---------------------------------------------------------------
+  // --- remove (× close) ---------------------------------------------------------
+  // Keep files on disk: the model may still re-read them from the uploads folder.
 
   async function remove(args) {
     try {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
       const path = args && typeof args.path === 'string' ? args.path : undefined
       if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
-      const row = pending.get(sessionId)
-      if (row) {
-        const i = row.findIndex((e) => e.abs === path)
-        if (i >= 0) row.splice(i, 1)
-        if (row.length === 0) pending.delete(sessionId)
-        probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (row.length > 0 ? row.length : 0))
-      }
+      dropPendingRef(sessionId, path)
+      probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (pending.get(sessionId) ? pending.get(sessionId).length : 0))
       return { ok: true }
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) }
+    }
+  }
+
+  // --- delete (🗑 permanent) -----------------------------------------------------
+  // Drop the pending ref AND physically delete the file, unless another live
+  // session still references the same dedup copy.
+
+  const rootsMatchingPath = async (absPath) => {
+    const matches = []
+    try {
+      let roots = []
+      if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
+      for (const r of roots) {
+        const base = String(r || '')
+        if (!base) continue
+        if (absPath.indexOf(base + '/uploads/') === 0) matches.push(base)
+      }
+    } catch {
+      // ignore
+    }
+    return matches
+  }
+
+  const scrubIndexForPath = async (absPath) => {
+    try {
+      const bases = await rootsMatchingPath(absPath)
+      for (const base of bases) {
+        const uploadsDir = base + '/uploads'
+        const index = await loadIndex(uploadsDir)
+        let changed = false
+        for (const k of Object.keys(index)) {
+          if (index[k].path === absPath) {
+            delete index[k]
+            changed = true
+          }
+        }
+        if (changed) await saveIndex(uploadsDir, index)
+      }
+    } catch (err) {
+      log('dfu index scrub failed:', err && err.message ? err.message : err)
+    }
+  }
+
+  async function deleteFile(args) {
+    const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
+    const path = args && typeof args.path === 'string' ? args.path : undefined
+    if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
+
+    // 1) Drop this session's pending ref (always; the user is done with it).
+    dropPendingRef(sessionId, path)
+    probe('DELETE-SESSION sid=' + sessionId + ' path=' + path)
+
+    // 2) Cross-session safety: another live session still references it -> keep file.
+    if (pendingRefs(path)) {
+      return { ok: true, removed: false, reason: 'in-use-by-other-session', path }
+    }
+
+    // 3) Physically delete.
+    if (typeof deps.deleteFile !== 'function') {
+      return { ok: false, removed: false, error: 'deleteFile unavailable', path }
+    }
+    try {
+      const res = await deps.deleteFile(path)
+      const resErr = String(res && res.error ? res.error : '')
+      if (!res || !res.ok) {
+        // A missing file is already deleted: treat ENOENT as success so both
+        // seams (shell `rm -f` and node `unlink`) behave idempotently.
+        if (/ENOENT|no such file/i.test(resErr)) {
+          await scrubIndexForPath(path)
+          return { ok: true, removed: true, path }
+        }
+        return { ok: false, removed: false, error: resErr || 'delete failed', path }
+      }
+      // 4) Scrub the dedup index.
+      await scrubIndexForPath(path)
+      probe('DELETE sid=' + sessionId + ' removed=1 path=' + path)
+      try {
+        enqueue(() => gcForRoots())
+      } catch {
+        // non-fatal
+      }
+      return { ok: true, removed: true, path }
+    } catch (err) {
+      return { ok: false, removed: false, error: String((err && err.message) || err), path }
+    }
+  }
+
+  // --- garbage collection (lazy TTL sweep) ---------------------------------------
+
+  async function gcForRoot(uploadsBase) {
+    const ttl = ttlMs()
+    if (!(ttl > 0)) return // automatic GC disabled
+    const uploadsDir = uploadsBase + '/uploads'
+    const index = await loadIndex(uploadsDir)
+    const keys = Object.keys(index)
+    if (keys.length === 0) return
+    let changed = false
+    const now = Date.now()
+    for (const hash of keys) {
+      const entry = index[hash]
+      const path = entry.path
+      // Stale entry: file no longer on disk -> drop it.
+      let exists = false
+      try {
+        const info = await deps.statPath(path)
+        exists = !!info
+      } catch {
+        exists = true // stay conservative on stat errors
+      }
+      if (!exists) {
+        delete index[hash]
+        changed = true
+        probe('GC-STALE path=' + path)
+        continue
+      }
+      // Still referenced by a live session -> never reclaim.
+      if (pendingRefs(path)) continue
+      // Over TTL (only when the timestamp is known) -> delete.
+      if (entry.at > 0 && now - entry.at > ttl) {
+        try {
+          if (typeof deps.deleteFile !== 'function') continue
+          const res = await deps.deleteFile(path)
+          if (res && res.ok) {
+            delete index[hash]
+            changed = true
+            probe('GC-DEL path=' + path)
+          } else {
+            log('dfu gc delete failed:', path, res && res.error)
+          }
+        } catch (err) {
+          log('dfu gc delete error:', path, err && err.message ? err.message : err)
+        }
+      }
+    }
+    if (changed) await saveIndex(uploadsDir, index)
+  }
+
+  async function gcForRoots() {
+    try {
+      let roots = []
+      if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
+      for (const r of roots) {
+        try {
+          await gcForRoot(r)
+        } catch (err) {
+          log('dfu gc sweep failed for root', r, err && err.message ? err.message : err)
+        }
+      }
+    } catch (err) {
+      log('dfu gc failed:', err && err.message ? err.message : err)
     }
   }
 
@@ -277,6 +510,8 @@ export function createHostCore(deps) {
   return {
     upload: (args) => enqueue(() => upload(args)),
     remove,
+    delete: (args) => enqueue(() => deleteFile(args)),
+    collect: () => enqueue(() => gcForRoots()),
     preStep,
   }
 }

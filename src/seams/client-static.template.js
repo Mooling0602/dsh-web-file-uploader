@@ -50,6 +50,22 @@ export function apply(ctx) {
       const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
       await fetch(url, { method: 'POST' })
     },
+    delete: async (args) => {
+      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
+      await fetch(url, { method: 'POST' })
+    },
+    configGet: async () => {
+      const res = await fetch('/dsh-web-file-uploader/config?action=get')
+      return res.json()
+    },
+    configSet: async (ttl) => {
+      const res = await fetch('/dsh-web-file-uploader/config?action=set', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ttl }),
+      })
+      return res.json()
+    },
     insertStyles: (css) => ensureStyles(css),
   })
   return core.apply(ctx)

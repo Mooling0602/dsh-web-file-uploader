@@ -23,10 +23,16 @@ function createClientCore(deps) {
   const react = deps.react
   const upload = deps.upload
   const remove = deps.remove
+  const del = deps.delete
+  const configGet = deps.configGet
+  const configSet = deps.configSet
   const insertStyles = deps.insertStyles || (() => {})
 
   const PAPERCLIP_PATH =
     'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'
+
+  const TRASH_PATH =
+    'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z'
 
   const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
@@ -38,7 +44,12 @@ function createClientCore(deps) {
       saved: '已保存',
       copyPath: '复制路径',
       remove: '移除',
+      delete: '删除文件（不可找回）',
       failed: '失败',
+      settingsTitle: '文件上传',
+      ttlLabel: '自动清理保留期',
+      ttlHint: '支持 1s / 1m / 1h / 1d，输入 0 表示永不清理。超过保留期且未被引用的文件会被自动清除。',
+      save: '保存',
     },
     en: {
       attachTitle: 'Attach files',
@@ -47,7 +58,12 @@ function createClientCore(deps) {
       saved: 'Saved',
       copyPath: 'Copy path',
       remove: 'Remove',
+      delete: 'Delete file (permanent)',
       failed: 'Failed',
+      settingsTitle: 'File uploads',
+      ttlLabel: 'Auto-cleanup retention',
+      ttlHint: 'Use 1s / 1m / 1h / 1d; enter 0 to never clean. Files past the retention that are no longer referenced are removed automatically.',
+      save: 'Save',
     },
   }
 
@@ -137,6 +153,26 @@ function createClientCore(deps) {
     if (entry && entry.path) {
       try {
         remove({ sessionId: sessionId, path: entry.path }).catch(() => {})
+      } catch {
+        // host unavailable — ignore
+      }
+    }
+    store.remove(sessionId, id)
+  }
+
+  // Permanently delete an attachment: drop the card AND remove the file from
+  // the host (trash can). Falls back to remove (un-inject only) when the host
+  // does not expose a `delete` RPC. Cross-session shared copies are protected
+  // on the host side (removed:false) — this session's card still goes away.
+  const deleteCard = (sessionId, id) => {
+    const entry = store.files(sessionId).find((x) => x.id === id)
+    if (entry && entry.path) {
+      try {
+        if (typeof del === 'function') {
+          del({ sessionId: sessionId, path: entry.path }).catch(() => {})
+        } else if (remove) {
+          remove({ sessionId: sessionId, path: entry.path }).catch(() => {})
+        }
       } catch {
         // host unavailable — ignore
       }
@@ -277,6 +313,33 @@ function createClientCore(deps) {
             tFn('copyPath'),
           ),
         )
+        actions.push(
+          react.createElement(
+            'button',
+            {
+              key: 'delete',
+              type: 'button',
+              className: 'dfu-chip-delete',
+              title: tFn('delete'),
+              onClick: () => deleteCard(sessionId, f.id),
+            },
+            react.createElement(
+              'svg',
+              {
+                width: 13,
+                height: 13,
+                viewBox: '0 0 24 24',
+                fill: 'none',
+                stroke: 'currentColor',
+                strokeWidth: 1.8,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+                'aria-hidden': 'true',
+              },
+              react.createElement('path', { d: TRASH_PATH }),
+            ),
+          ),
+        )
       }
       actions.push(
         react.createElement(
@@ -374,7 +437,99 @@ function createClientCore(deps) {
   color: var(--dsw-alias-state-error-primary, #ef4444);
   background: var(--dsw-alias-bg-layer-1, rgba(127, 127, 127, 0.12));
 }
+.dfu-chip-delete {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dsw-alias-label-secondary, #8a8f98); font-size: 14px; line-height: 1;
+  padding: 3px; border-radius: 6px; display: inline-flex; align-items: center;
+}
+.dfu-chip-delete:hover {
+  color: var(--dsw-alias-state-error-primary, #ef4444);
+  background: var(--dsw-alias-bg-layer-1, rgba(127, 127, 127, 0.12));
+}
+.dfu-settings { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
+.dfu-settings-row { display: flex; align-items: center; gap: 10px; }
+.dfu-settings-label { font-size: 13px; font-weight: 500; white-space: nowrap; }
+.dfu-settings-input {
+  flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25));
+  border-radius: 8px; background: var(--dsw-alias-bg-layer-1, transparent);
+  color: var(--dsw-alias-label-primary, #333);
+}
+.dfu-settings-hint { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); line-height: 1.5; }
+.dfu-settings-actions { display: flex; align-items: center; gap: 10px; }
+.dfu-settings-save {
+  align-self: flex-start; padding: 5px 16px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-brand-primary, #4d6bfe); color: #fff;
+  background: var(--dsw-alias-brand-primary, #4d6bfe); border-radius: 8px;
+}
+/* Dark mode: the brand token resolves to a light surface, so keep the button
+   fill as-is (already contrasts with the dark page) and only darken the text so
+   "Save" stays readable against it. Light mode keeps the original white text. */
+body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
+.dfu-settings-save:disabled { opacity: .6; cursor: default; }
+.dfu-settings-saved { font-size: 12px; color: var(--dsw-alias-state-success-primary, #22c55e); }
 `
+
+  // --- settings panel ------------------------------------------------------
+
+  function SettingsPanel() {
+    useStoreVersion()
+    const [ttl, setTtl] = react.useState('')
+    const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
+    react.useEffect(() => {
+      let alive = true
+      if (typeof configGet === 'function') {
+        configGet()
+          .then((r) => {
+            if (alive && r && r.ttl != null) setTtl(String(r.ttl))
+          })
+          .catch(() => {})
+      }
+      return () => { alive = false }
+    }, [])
+    const save = () => {
+      if (typeof configSet !== 'function') return
+      setStatus('saving')
+      configSet(ttl.trim())
+        .then((r) => {
+          if (r && r.ok === false) {
+            setStatus('error')
+            return
+          }
+          if (r && r.ttl != null) setTtl(String(r.ttl))
+          setStatus('saved')
+        })
+        .catch(() => setStatus('error'))
+    }
+    return react.createElement(
+      'div',
+      { className: 'dfu-settings' },
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-row' },
+        react.createElement('label', { className: 'dfu-settings-label' }, tFn('ttlLabel')),
+        react.createElement('input', {
+          className: 'dfu-settings-input',
+          value: ttl,
+          placeholder: '7d',
+          spellCheck: false,
+          onChange: (e) => setTtl(e.target.value),
+        }),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('ttlHint')),
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-actions' },
+        react.createElement(
+          'button',
+          { className: 'dfu-settings-save', disabled: status === 'saving', onClick: save },
+          tFn('save'),
+        ),
+        status === 'saved' ? react.createElement('span', { className: 'dfu-settings-saved' }, tFn('saved')) : null,
+        status === 'error' ? react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-error' }, tFn('failed')) : null,
+      ),
+    )
+  }
 
   // --- plugin entry ---------------------------------------------------------
 
@@ -393,6 +548,12 @@ function createClientCore(deps) {
       }
     }
     insertStyles(CSS)
+    slots.inject('settings.section', () =>
+      slots.register(
+        { name: 'settings.section', id: 'dfu-settings', order: 40, label: () => tFn('settingsTitle'), inject: () => ({}) },
+        () => react.createElement(SettingsPanel, {}),
+      ),
+    )
     slots.inject('conversation.input.left', () =>
       slots.register(
         { name: 'conversation.input.left', id: 'dfu-attach', order: 0 },
@@ -457,6 +618,22 @@ export function apply(ctx) {
     remove: async (args) => {
       const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
       await fetch(url, { method: 'POST' })
+    },
+    delete: async (args) => {
+      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
+      await fetch(url, { method: 'POST' })
+    },
+    configGet: async () => {
+      const res = await fetch('/dsh-web-file-uploader/config?action=get')
+      return res.json()
+    },
+    configSet: async (ttl) => {
+      const res = await fetch('/dsh-web-file-uploader/config?action=set', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ttl }),
+      })
+      return res.json()
     },
     insertStyles: (css) => ensureStyles(css),
   })

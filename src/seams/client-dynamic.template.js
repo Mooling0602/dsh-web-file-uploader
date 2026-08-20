@@ -8,6 +8,9 @@ return {
       react: React,
       upload: (args) => host.call('upload', args),
       remove: (args) => host.call('remove', args),
+      delete: (args) => host.call('delete', args),
+      configGet: () => host.call('dfu-config-get'),
+      configSet: (ttl) => host.call('dfu-config-set', { ttl }),
       insertStyles: (css) => styles.insert(css),
     })
     return core.apply(ctx)
