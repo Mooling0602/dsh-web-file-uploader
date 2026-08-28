@@ -10,5 +10,5 @@
 # Format mirrors @deepseek-ai/dsh-web-app/cordis.patch.yml.
 
 - insert:
-    - id: dsh-web-file-uploader
+    - id: web-file-uploader
       name: 'dsh-web-file-uploader'

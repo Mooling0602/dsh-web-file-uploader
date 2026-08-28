@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-file-uploader",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "description": "A DeepSeek-style paperclip attach button in the DSH web composer; uploads files to the DSH host (model-aware: native image blocks for multimodal models, file paths for text-only models).",
   "keywords": [
@@ -51,7 +51,13 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web",
+      "immediately": true
     }
   }
 }

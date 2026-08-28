@@ -121,6 +121,22 @@ function createClientCore(deps) {
     return (bytes / 1024 / 1024).toFixed(1) + ' MB'
   }
 
+  // Extract the session id from slot props across dsh generations:
+  // - dsh <= 0.1.1-rc.x passed `{ sessionId }` directly to composer-slot occupants;
+  // - dsh 0.1.2-alpha passes an InputZone owner share `{ session: SessionSnapshot,
+  //   input }` where the id lives at `session.sessionId` (plus standard hooks).
+  // Both shapes are accepted so one build runs on either version.
+  function sessionIdOf(props) {
+    if (props) {
+      if (typeof props.sessionId === 'string' && props.sessionId !== '') return props.sessionId
+      const session = props.session
+      if (session && typeof session === 'object' && typeof session.sessionId === 'string') {
+        return session.sessionId
+      }
+    }
+    return undefined
+  }
+
   // Re-render when the shared store OR the active locale changes.
   function useStoreVersion() {
     const [v, setV] = react.useState(0)
@@ -184,7 +200,7 @@ function createClientCore(deps) {
 
   function AttachButton(props) {
     useStoreVersion()
-    const sessionId = props.sessionId
+    const sessionId = sessionIdOf(props)
     const onPick = (event) => {
       const files = Array.prototype.slice.call(event.target.files || [])
       event.target.value = ''
@@ -268,7 +284,7 @@ function createClientCore(deps) {
 
   function UploadChips(props) {
     useStoreVersion()
-    const sessionId = props.sessionId
+    const sessionId = sessionIdOf(props)
     const files = store.files(sessionId)
     if (!files.length) return null
     const chips = []
@@ -557,13 +573,13 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
     slots.inject('conversation.input.left', () =>
       slots.register(
         { name: 'conversation.input.left', id: 'dfu-attach', order: 0 },
-        (props) => react.createElement(AttachButton, { sessionId: props.sessionId }),
+        (props) => react.createElement(AttachButton, props),
       ),
     )
     slots.inject('conversation.input.dock', () =>
       slots.register(
         { name: 'conversation.input.dock', id: 'dfu-uploads', order: 5 },
-        (props) => react.createElement(UploadChips, { sessionId: props.sessionId }),
+        (props) => react.createElement(UploadChips, props),
       ),
     )
   }
