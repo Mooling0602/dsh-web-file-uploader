@@ -31,7 +31,7 @@ const ensureStyles = (() => {
 // Keep this source free of ESM imports so the wrapper can inline it verbatim.
 let react = null // __REACT__
 
-export const inject = []
+export const inject = ['slots', 'locale']
 
 export function apply(ctx) {
   if (react === null || react.createElement === undefined) return

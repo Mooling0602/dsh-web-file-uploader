@@ -2,7 +2,7 @@
   "id": "dfu-1",
   "idPrefix": "dfu",
   "name": "dsh-web-file-uploader",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "purpose": "DeepSeek-style paperclip attach button in the composer input; uploads files to the DSH host with model-aware adaptation (native image blocks for multimodal models, file paths for text-only models).",
   "host": "src/host.js",
   "client": "src/client.js",

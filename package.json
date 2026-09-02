@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-file-uploader",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": false,
   "description": "A DeepSeek-style paperclip attach button in the DSH web composer; uploads files to the DSH host (model-aware: native image blocks for multimodal models, file paths for text-only models).",
   "keywords": [
