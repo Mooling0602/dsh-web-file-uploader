@@ -17,7 +17,9 @@ re-uploads.
   attach button's chrome (28px circle, `--dsw-specific-selector` fill, 14px
   filled glyph, `--dsw-alias-interactive-bg-hover-solid` hover) with the
   paperclip rotated 45° to keep this plugin's long-standing diagonal, so the
-  two buttons stay tellable apart at a glance
+  two buttons stay tellable apart at a glance. It sits directly to the right of
+  the official attach button, ahead of the permission chips — and Settings can
+  optionally hide the official button and let this one take its place
 - Multi-file selection with **preview-style attachment cards** (image
   thumbnails) in the dock above the composer: reading → uploading → saved,
   with copy-path and remove buttons
@@ -133,14 +135,41 @@ race in-flight writes; no background task is required.
   removed when you explicitly click 🗑.
 - **Configure** in **Settings → File uploads** (native DSH settings panel; the
   tab carries its own paperclip mark, so it never reads as the gear rows other
-  plugins get) — a single field that persists via the `settings` service namespace
-  `dsh-web-file-uploader` (`{ ttl }`). The environment variable
-  `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a fallback before
-  the default. In dynamic (session) mode the setting lives in memory; in the
-  static bundle it persists through the settings document.
+  plugins get): the retention field and the *replace the official attach button*
+  switch share one Save button. The static bundle persists both in
+  `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial }`) and merges
+  updates field by field, so saving one never clears the other. The environment
+  variable `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a
+  fallback before the default. In dynamic (session) mode the setting lives in
+  memory, overlaid over the optional `dsh-web-file-uploader` settings namespace.
 
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.
+
+### Attach-button placement & replacing the official button
+
+The composer tool row reads `[+ menu] [official attach] [permission chips]`.
+This plugin's button always stays visible and is placed **directly to the right
+of the official attach button**, ahead of the permission chips. No node React
+owns is moved: the shell's slot wrapper is `display: contents`, so flex
+`order` re-sequences the row — ours at 1, everything the shell draws after its
+own attach button at 2.
+
+| *Replace the official attach button* | Result |
+|---|---|
+| Off (default) | Two buttons side by side: the official upright paperclip, then this plugin's diagonal one |
+| On | The official button is hidden and this plugin's button stands in its place — a single upload control in the row |
+
+- Saving applies at once, with no refresh, and to every composer mounted later.
+- Switching it off and saving — or disabling/unloading the plugin — puts the
+  official button back exactly as the shell drew it: hiding writes one inline
+  style and never detaches a node, so React's tree stays intact.
+- While the official button is hidden, its own pending-attachment rail can no
+  longer be triggered; uploads, progress and cleanup all belong to this plugin.
+- This plugin's button is never disabled by a running turn — a file picked while
+  the machine is busy is injected at the next step.
+- If a future shell stops matching, the row is left exactly as drawn, the
+  official button stays visible, and one console warning names the reason.
 
 ### Two card actions (recap)
 

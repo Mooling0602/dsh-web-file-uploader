@@ -93,11 +93,11 @@ export function apply(ctx) {
       const res = await fetch('/dsh-web-file-uploader/config?action=get')
       return res.json()
     },
-    configSet: async (ttl) => {
+    configSet: async (cfg) => {
       const res = await fetch('/dsh-web-file-uploader/config?action=set', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ttl }),
+        body: JSON.stringify(cfg),
       })
       return res.json()
     },

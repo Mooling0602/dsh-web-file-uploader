@@ -63,7 +63,7 @@ return {
       remove: (args) => host.call('remove', args),
       delete: (args) => host.call('delete', args),
       configGet: () => host.call('dfu-config-get'),
-      configSet: (ttl) => host.call('dfu-config-set', { ttl }),
+      configSet: (cfg) => host.call('dfu-config-set', cfg),
       insertStyles: (css) => styles.insert(css),
     })
     return core.apply(ctx)

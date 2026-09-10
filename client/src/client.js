@@ -73,6 +73,10 @@ function createClientCore(deps) {
       ttlLabel: '自动清理保留期',
       ttlHint: '支持 1s / 1m / 1h / 1d，输入 0 表示永不清理。超过保留期且未被引用的文件会被自动清除。',
       save: '保存',
+      replaceOfficial: '替代官方附件按钮',
+      replaceHint: '开启后隐藏官方按钮，本插件按钮移到它的位置上，输入框左侧只保留一个上传入口。',
+      replaceScope: '上传、进度与自动清理仍由本插件负责；保存后立即生效，无需刷新。',
+      replaceRestore: '关闭开关并保存即可恢复官方按钮；停用或卸载插件时也会自动恢复。',
     },
     en: {
       attachTitle: 'Attach files',
@@ -86,6 +90,10 @@ function createClientCore(deps) {
       ttlLabel: 'Auto-cleanup retention',
       ttlHint: 'Use 1s / 1m / 1h / 1d; enter 0 to never clean. Files past the retention that are no longer referenced are removed automatically.',
       save: 'Save',
+      replaceOfficial: 'Replace the official attach button',
+      replaceHint: 'Hides the official button and moves this plugin’s button into its place, so the composer keeps a single upload control.',
+      replaceScope: 'Uploading, progress and auto-cleanup still come from this plugin; saving applies at once, no refresh needed.',
+      replaceRestore: 'Turning the switch off and saving brings the official button back; disabling or removing the plugin restores it too.',
     },
   }
 
@@ -498,6 +506,32 @@ function createClientCore(deps) {
 .dfu-settings { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
 .dfu-settings-row { display: flex; align-items: center; gap: 10px; }
 .dfu-settings-label { font-size: 13px; font-weight: 500; white-space: nowrap; }
+/* Replace-official row: the shell's settings convention (label left, control
+   right) and the shell's own Switch geometry (36x20 capsule, 16px thumb, state
+   keyed off aria-checked) so the toggle reads as one of the shell's settings
+   rather than as plugin furniture. */
+.dfu-settings-toggle {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; font-size: 13px; line-height: 1.5;
+  color: var(--dsw-alias-label-primary, #333);
+}
+.dfu-settings-toggle-label { flex: 1; min-width: 0; font-weight: 500; }
+.dfu-switch {
+  box-sizing: border-box; position: relative; flex: 0 0 auto;
+  width: 36px; height: 20px; padding: 2px; border: 0;
+  border-radius: 10px; corner-shape: round; cursor: pointer;
+  background: var(--dsw-alias-border-l3, rgba(127, 127, 127, .35));
+}
+.dfu-switch[aria-checked='true'] { background: var(--dsw-alias-brand-primary, #4d6bfe); }
+.dfu-switch:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: 2px;
+}
+.dfu-switch-thumb {
+  display: block; width: 16px; height: 16px; border-radius: 50%;
+  corner-shape: round; background: var(--dsw-alias-label-primary-foreground, #fff);
+  transition: transform 120ms ease;
+}
+.dfu-switch[aria-checked='true'] .dfu-switch-thumb { transform: translateX(16px); }
 .dfu-settings-input {
   flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;
   border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25));
@@ -532,13 +566,16 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   function SettingsPanel() {
     useStoreVersion()
     const [ttl, setTtl] = react.useState('')
+    const [replaceOn, setReplaceOn] = react.useState(false)
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
     react.useEffect(() => {
       let alive = true
       if (typeof configGet === 'function') {
         configGet()
           .then((r) => {
-            if (alive && r && r.ttl != null) setTtl(String(r.ttl))
+            if (!alive || !r) return
+            if (r.ttl != null) setTtl(String(r.ttl))
+            setReplaceOn(r.replaceOfficial === true)
           })
           .catch(() => {})
       }
@@ -547,13 +584,17 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const save = () => {
       if (typeof configSet !== 'function') return
       setStatus('saving')
-      configSet(ttl.trim())
+      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn })
         .then((r) => {
           if (r && r.ok === false) {
             setStatus('error')
             return
           }
           if (r && r.ttl != null) setTtl(String(r.ttl))
+          if (r && typeof r.replaceOfficial === 'boolean') setReplaceOn(r.replaceOfficial)
+          // Settings can be open with the composer unmounted, so the saved value
+          // is applied to whatever is on screen now and to the next mount.
+          applyReplaceOfficial(r !== null && typeof r === 'object' && r.replaceOfficial === true)
           setStatus('saved')
         })
         .catch(() => setStatus('error'))
@@ -561,6 +602,26 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     return react.createElement(
       'div',
       { className: 'dfu-settings' },
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-toggle' },
+        react.createElement('span', { className: 'dfu-settings-toggle-label' }, tFn('replaceOfficial')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': replaceOn,
+            'aria-label': tFn('replaceOfficial'),
+            className: 'dfu-switch',
+            onClick: () => setReplaceOn(!replaceOn),
+          },
+          react.createElement('span', { className: 'dfu-switch-thumb' }),
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceHint')),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceScope')),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceRestore')),
       react.createElement(
         'div',
         { className: 'dfu-settings-row' },
@@ -653,6 +714,187 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     })
   }
 
+  // --- composer placement ---------------------------------------------------
+
+  // The shell draws the composer tools as one flex row:
+  //
+  //   [+ menu] [official attach] [file input] [access/plan chips] [slot: left]
+  //
+  // and this plugin's button arrives through that last slot — to the right of
+  // the mode chips, a few pixels away from the official paperclip it so closely
+  // resembles. Two placements are handled here, neither of which touches a node
+  // React owns:
+  //
+  //   - our button moves next to the official one (flex `order`; valid because
+  //     the shell's slot wrapper is `display: contents`, which makes our label a
+  //     flex item of the row itself);
+  //   - when the user asks for it, the official button is hidden so the row
+  //     keeps exactly one upload control and ours stands in its place.
+  //
+  // Every write records the value it replaced in a marker attribute, so a
+  // switch-off, a plugin unload, or the next mount can put the shell back
+  // exactly as it was drawn. On a shell that does not match, all of it is a
+  // no-op: our button simply stays in its slot.
+  const ATTACH_GLYPH_PREFIX = 'M5.5498' // shell paperclip (ic_ds_paperclip_outline_16)
+  const SLOT_ANCHOR = '[data-slot="conversation.input.left"]'
+  const ORDER_ATTR = 'data-dfu-order'
+  const HIDDEN_ATTR = 'data-dfu-hidden'
+  const OUR_ORDER = '1'
+  const AFTER_ORDER = '2'
+
+  let replaceOfficial = false
+  let warnedMissingAttach = false
+
+  /** Set (null clears) our flex order, remembering the inline value replaced. */
+  function applyOrder(el, order) {
+    if (order === null) {
+      const previous = el.getAttribute(ORDER_ATTR)
+      if (previous === null) return
+      el.style.order = previous
+      el.removeAttribute(ORDER_ATTR)
+      return
+    }
+    if (el.getAttribute(ORDER_ATTR) === order) return
+    if (!el.hasAttribute(ORDER_ATTR)) el.setAttribute(ORDER_ATTR, el.style.order || '')
+    el.style.order = order
+  }
+
+  /** Hide or restore the shell's attach button, remembering its inline display. */
+  function applyHidden(el, hidden) {
+    if (hidden) {
+      if (el.hasAttribute(HIDDEN_ATTR)) return
+      el.setAttribute(HIDDEN_ATTR, el.style.display || '')
+      el.style.display = 'none'
+      return
+    }
+    const previous = el.getAttribute(HIDDEN_ATTR)
+    if (previous === null) return
+    el.style.display = previous
+    el.removeAttribute(HIDDEN_ATTR)
+  }
+
+  /**
+   * The shell's attach button inside one tools row: the paperclip glyph, never
+   * the settings-nav mark (which reuses the same glyph).
+   * @returns the button, or null when this row is not the shell's composer.
+   */
+  function findAttachButton(row) {
+    const buttons = row.querySelectorAll('button')
+    for (let i = 0; i < buttons.length; i += 1) {
+      const button = buttons[i]
+      if (button.querySelector('[data-dfu-mark]') !== null) continue
+      const path = button.querySelector('svg path')
+      if (path === null) continue
+      const d = path.getAttribute('d')
+      if (typeof d === 'string' && d.indexOf(ATTACH_GLYPH_PREFIX) === 0) return button
+    }
+    return null
+  }
+
+  /**
+   * Place one composer around the shell's attach button.
+   * @returns the attach button this row was placed against, or null.
+   */
+  function layoutComposer(anchor) {
+    const row = anchor.parentElement
+    if (row === null) return null
+    const attach = findAttachButton(row)
+    if (attach === null) return null
+    // The flex item is the button itself, unless the shell wraps it.
+    let attachItem = attach
+    while (attachItem !== null && attachItem.parentElement !== row) attachItem = attachItem.parentElement
+    if (attachItem === null) return null
+    applyOrder(anchor, OUR_ORDER)
+    const label = anchor.querySelector('.dfu-attach')
+    if (label !== null) applyOrder(label, OUR_ORDER)
+    // Everything the shell draws after its attach button follows ours.
+    let passed = false
+    const children = row.children
+    for (let i = 0; i < children.length; i += 1) {
+      const child = children[i]
+      if (!passed) {
+        if (child === attachItem) passed = true
+        continue
+      }
+      if (child !== anchor) applyOrder(child, AFTER_ORDER)
+    }
+    applyHidden(attach, replaceOfficial)
+    return attach
+  }
+
+  // The row already laid out, so the steady state costs a few property reads
+  // instead of a document-wide scan per mutation — the shell mutates the DOM
+  // continuously while a reply streams. Any node of it being replaced drops the
+  // cache and forces a rescan.
+  let laidOut = null
+
+  function applyComposerLayout() {
+    if (typeof document === 'undefined') return
+    if (laidOut !== null && laidOut.row.isConnected && laidOut.anchor.isConnected && laidOut.attach.isConnected) {
+      layoutComposer(laidOut.anchor)
+      return
+    }
+    laidOut = null
+    const anchors = document.querySelectorAll(SLOT_ANCHOR)
+    for (let i = 0; i < anchors.length; i += 1) {
+      const anchor = anchors[i]
+      const attach = layoutComposer(anchor)
+      if (attach !== null) laidOut = { row: anchor.parentElement, anchor: anchor, attach: attach }
+    }
+    if (laidOut === null && anchors.length > 0 && replaceOfficial && !warnedMissingAttach) {
+      // A composer without a recognizable attach button (a shell whose glyph or
+      // structure changed): the official button stays visible and ours keeps its
+      // slot, which is the pre-replacement behaviour rather than a broken row.
+      warnedMissingAttach = true
+      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn('[dsh-web-file-uploader] official attach button not found; keeping the plugin button in its slot')
+      }
+    }
+  }
+
+  /** Give the shell its composer back: clear every marker we wrote. */
+  function restoreComposerLayout() {
+    if (typeof document === 'undefined') return
+    laidOut = null
+    const marked = document.querySelectorAll('[' + ORDER_ATTR + '], [' + HIDDEN_ATTR + ']')
+    for (let i = 0; i < marked.length; i += 1) {
+      applyOrder(marked[i], null)
+      applyHidden(marked[i], false)
+    }
+  }
+
+  function applyReplaceOfficial(next) {
+    const value = next === true
+    if (value === replaceOfficial) return
+    replaceOfficial = value
+    applyComposerLayout()
+  }
+
+  function installComposerLayout() {
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+    // An instance disabled while it was replacing the official button leaves its
+    // markers behind; undo them before deciding anything.
+    restoreComposerLayout()
+    applyComposerLayout()
+    let scheduled = false
+    const run = () => {
+      scheduled = false
+      applyComposerLayout()
+    }
+    const schedule = () => {
+      if (scheduled) return
+      scheduled = true
+      // Coalesce a mutation burst (streaming tokens, a session switch) into one
+      // pass; the cached row makes the common pass almost free.
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+      else setTimeout(run, 16)
+    }
+    // Child lists only: the composer is re-created on session switches, while
+    // our own writes are attributes — so this observer never feeds itself.
+    const observer = new MutationObserver(schedule)
+    observer.observe(document.documentElement, { childList: true, subtree: true })
+  }
+
   // --- plugin entry ---------------------------------------------------------
 
   function apply(ctx) {
@@ -671,6 +913,18 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     }
     insertStyles(CSS)
     installSettingsNavMark()
+    installComposerLayout()
+    if (typeof ctx.effect === 'function') {
+      // Disabling or unloading the plugin hands the official button back.
+      ctx.effect(() => restoreComposerLayout, 'dfu: composer attach placement')
+    }
+    if (typeof configGet === 'function') {
+      configGet()
+        .then((cfg) => {
+          if (cfg) applyReplaceOfficial(cfg.replaceOfficial === true)
+        })
+        .catch(() => {})
+    }
     slots.inject('settings.section', () =>
       slots.register(
         { name: 'settings.section', id: 'dfu-settings', order: 40, label: () => tFn('settingsTitle'), inject: () => ({}) },
@@ -785,11 +1039,11 @@ export function apply(ctx) {
       const res = await fetch('/dsh-web-file-uploader/config?action=get')
       return res.json()
     },
-    configSet: async (ttl) => {
+    configSet: async (cfg) => {
       const res = await fetch('/dsh-web-file-uploader/config?action=set', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ttl }),
+        body: JSON.stringify(cfg),
       })
       return res.json()
     },

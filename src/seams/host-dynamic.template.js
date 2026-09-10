@@ -27,23 +27,32 @@ return {
 
     // Config for the settings UI. Dynamic mode keeps the value in memory for the
     // session (no schema registry), overlaid over env / optional settings.
-    let runtimeTtl = '7d'
-    const getConfig = () => {
+    //   ttl             auto-cleanup retention
+    //   replaceOfficial hide the shell's composer attach button and move ours
+    //                   into its place
+    let runtimeConfig = { ttl: '7d', replaceOfficial: false }
+    const storedConfig = () => {
       const settings = ctx.get('settings')
-      let ttl
-      if (settings !== undefined) {
-        try {
-          const v = settings.get('dsh-web-file-uploader')
-          if (v && typeof v === 'object' && typeof v.ttl === 'string' && v.ttl !== '') ttl = v.ttl
-        } catch {
-          // fall through
-        }
+      if (settings === undefined) return null
+      try {
+        const v = settings.get('dsh-web-file-uploader')
+        if (v && typeof v === 'object') return v
+      } catch {
+        // fall through
       }
-      if ((ttl === undefined || ttl === '') && typeof process !== 'undefined' && process.env && process.env.DSH_UPLOAD_TTL) {
+      return null
+    }
+    const getConfig = () => {
+      const stored = storedConfig()
+      let ttl = stored && typeof stored.ttl === 'string' && stored.ttl !== '' ? stored.ttl : undefined
+      if (ttl === undefined && typeof process !== 'undefined' && process.env && process.env.DSH_UPLOAD_TTL) {
         ttl = process.env.DSH_UPLOAD_TTL
       }
-      if (ttl === undefined || ttl === '') ttl = runtimeTtl
-      return { ttl }
+      if (ttl === undefined) ttl = runtimeConfig.ttl
+      const replaceOfficial = stored && typeof stored.replaceOfficial === 'boolean'
+        ? stored.replaceOfficial
+        : runtimeConfig.replaceOfficial
+      return { ttl, replaceOfficial }
     }
 
     const core = createHostCore({
@@ -225,8 +234,12 @@ return {
     harness.handle('delete', (args) => core.delete(args))
     harness.handle('dfu-config-get', () => getConfig())
     harness.handle('dfu-config-set', (args) => {
-      const raw = args && typeof args.ttl === 'string' ? args.ttl : ''
-      runtimeTtl = raw.trim()
+      // Partial update: a caller that only knows about one field must not clear
+      // the other, so the patch is merged over the resolved config.
+      const next = getConfig()
+      if (args && args.ttl != null) next.ttl = String(args.ttl).trim()
+      if (args && typeof args.replaceOfficial === 'boolean') next.replaceOfficial = args.replaceOfficial
+      runtimeConfig = next
       return getConfig()
     })
     ctx.on('agent/pre-step', (payload, next) => core.preStep(payload, next))
