@@ -84,6 +84,68 @@ return {
           return { ok: false, error: String((err && err.message) || err) }
         }
       },
+      // Streaming intake inside the sandbox: the dynamic package cannot require
+      // node:fs and the fs service writes whole text only, so bytes reach disk
+      // through the shell — one decoded chunk appended per RPC call. Memory
+      // stays bounded by the chunk size instead of the file size.
+      ensureDir: async (absDir) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'mkdir -p ' + shellQuote(absDir),
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          if (result.exitCode !== 0) throw new Error('mkdir failed (exit ' + result.exitCode + ')')
+        } catch (err) {
+          throw new Error(String((err && err.message) || err))
+        }
+      },
+      appendUploadChunk: async (absPath, base64) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const dir = absPath.slice(0, absPath.lastIndexOf('/'))
+          const spec = shell.resolve({
+            command: 'mkdir -p ' + shellQuote(dir) + ' && base64 -d >> ' + shellQuote(absPath),
+            stdin: base64,
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          return result.exitCode === 0 ? { ok: true } : { ok: false, error: 'append failed (exit ' + result.exitCode + ')' }
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) }
+        }
+      },
+      hashFile: async (absPath) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'sha256sum ' + shellQuote(absPath),
+            stdoutMaxBytes: 1024,
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          if (result.exitCode !== 0) return null
+          const out = String((result.stdout && result.stdout.text) || '')
+          const m = /^[0-9a-f]{64}/.exec(out.trim())
+          return m ? m[0] : null
+        } catch {
+          return null
+        }
+      },
+      moveFile: async (from, to) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'mv -f ' + shellQuote(from) + ' ' + shellQuote(to),
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          return result.exitCode === 0 ? { ok: true } : { ok: false, error: 'move failed (exit ' + result.exitCode + ')' }
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) }
+        }
+      },
       statPath: async (absPath) => {
         try {
           const target = await fs.resolve(absPath)
@@ -153,6 +215,12 @@ return {
     })
 
     harness.handle('upload', (args) => core.upload(args))
+    // Chunked streaming intake (the dynamic client slices the File and sends
+    // one base64 chunk per call; finish hashes and publishes it).
+    harness.handle('upload-begin', (args) => core.beginStream(args))
+    harness.handle('upload-chunk', (args) => core.appendStream(args))
+    harness.handle('upload-finish', (args) => core.commitStream(args))
+    harness.handle('upload-abort', (args) => core.abortStream(args))
     harness.handle('remove', (args) => core.remove(args))
     harness.handle('delete', (args) => core.delete(args))
     harness.handle('dfu-config-get', () => getConfig())

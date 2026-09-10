@@ -46,7 +46,6 @@ export function createClientCore(deps) {
   const DICT = {
     zh: {
       attachTitle: '上传附件',
-      reading: '读取中…',
       uploading: '上传中…',
       saved: '已保存',
       copyPath: '复制路径',
@@ -60,7 +59,6 @@ export function createClientCore(deps) {
     },
     en: {
       attachTitle: 'Attach files',
-      reading: 'Reading…',
       uploading: 'Uploading…',
       saved: 'Saved',
       copyPath: 'Copy path',
@@ -227,44 +225,49 @@ export function createClientCore(deps) {
           mime: file.type || '',
           isImage: isImage,
           previewUrl: previewUrl,
-          status: 'reading',
+          status: 'uploading',
           error: null,
           path: null,
+          loaded: 0,
+          total: file.size,
         })
-        const reader = new FileReader()
-        reader.onload = () => {
-          const dataUrl = String(reader.result || '')
-          const comma = dataUrl.indexOf(',')
-          const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : ''
-          if (!base64) {
-            store.update(sessionId, id, { status: 'error', error: 'Read failed' })
-            return
+        // The File object itself rides the transport: every seam streams it
+        // (request body in the static bundle, chunked RPC in the dynamic
+        // sandbox), so nothing here reads the whole file into memory. Progress
+        // arrives per chunk and only ever updates the card's status line.
+        const onProgress = (loaded, total) => {
+          if (store.files(sessionId).some((x) => x.id === id)) {
+            store.update(sessionId, id, { loaded: loaded, total: total || file.size })
           }
-          store.update(sessionId, id, { status: 'uploading' })
-          upload({ sessionId: sessionId, name: file.name, mime: file.type || '', base64: base64 })
-            .then((res) => {
-              const stillPresent = store.files(sessionId).some((x) => x.id === id)
-              if (res && res.ok) {
-                if (stillPresent) store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
-                else {
-                  try {
-                    remove({ sessionId: sessionId, path: res.path }).catch(() => {})
-                  } catch {
-                    // host unavailable — ignore
-                  }
-                }
-              } else if (stillPresent) {
-                store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
-              }
-            })
-            .catch((err) => {
-              if (store.files(sessionId).some((x) => x.id === id)) {
-                store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
-              }
-            })
         }
-        reader.onerror = () => store.update(sessionId, id, { status: 'error', error: 'Read failed' })
-        reader.readAsDataURL(file)
+        upload({
+          sessionId: sessionId,
+          name: file.name,
+          mime: file.type || '',
+          size: file.size,
+          file: file,
+          onProgress: onProgress,
+        })
+          .then((res) => {
+            const stillPresent = store.files(sessionId).some((x) => x.id === id)
+            if (res && res.ok) {
+              if (stillPresent) store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
+              else {
+                try {
+                  remove({ sessionId: sessionId, path: res.path }).catch(() => {})
+                } catch {
+                  // host unavailable — ignore
+                }
+              }
+            } else if (stillPresent) {
+              store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
+            }
+          })
+          .catch((err) => {
+            if (store.files(sessionId).some((x) => x.id === id)) {
+              store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
+            }
+          })
       })
     }
     return react.createElement(
@@ -318,10 +321,15 @@ export function createClientCore(deps) {
       }
 
       let statusNode = null
-      if (f.status === 'reading') {
-        statusNode = react.createElement('span', { className: 'dfu-chip-status' }, tFn('reading'))
-      } else if (f.status === 'uploading') {
-        statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-active' }, tFn('uploading'))
+      if (f.status === 'uploading') {
+        // Percentage once the transport has reported bytes: a streamed file
+        // never knows its total up front, so keep the plain label until then.
+        const pct = f.total > 0 ? Math.min(100, Math.floor(((f.loaded || 0) / f.total) * 100)) : 0
+        statusNode = react.createElement(
+          'span',
+          { className: 'dfu-chip-status dfu-chip-status-active' },
+          pct > 0 ? tFn('uploading') + ' ' + pct + '%' : tFn('uploading'),
+        )
       } else if (f.status === 'done') {
         statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-ok', title: f.path || '' }, tFn('saved'))
       } else {

@@ -96,7 +96,9 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 ## 附件大小限制
 
-- **单文件约 48 MiB**（动态模式：RPC 载荷上限 64 MiB base64，约 48 MiB 解码；静态模式：流式接收 HTTP body 时同此上限）。超限文件会在卡片上显示明确错误。
+- **没有单文件上限**：静态 bundle 把浏览器发来的请求体**边收边写**、同一遍算 SHA-256；动态插件由客户端把 File 切片，每片一次 RPC 追加进临时文件。两条路径都不会把整个文件读进内存（实测 120 MiB 上传期间进程内存增长 < 1 MiB），最终只受磁盘空间限制。
+- 上传期间卡片显示百分比：静态模式来自 XHR 的 `upload.onprogress`，动态模式按已发送分片累加。
+- **回退路径仍有上限**：调用方若不传 `File` 而直接给 base64（旧调用形式），仍受单次 64 MiB base64 / 约 48 MiB 载荷限制——该路径只为兼容保留。
 - 多模态原生注入图片时，额外遵循部署的 `attachments` 限制（单消息字节/像素上限）。
 
 ## 安装方式
@@ -154,12 +156,14 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 ```
 浏览器 (Client)                          DSH 宿主机 (Host)
 ─────────────                             ─────────────────
-conversation.input.left                   harness.handle('upload', …)   [动态]
-  └ 回形针 ── FileReader ──┐             webServer 路由 POST /upload   [静态]
+conversation.input.left                   harness.handle('upload-begin'/'upload-chunk'/
+  └ 回形针 ── File（切片）─┐                  'upload-finish'/'upload-abort')  [动态]
+                           │             webServer 路由 POST /upload          [静态]
                            ▼             ┌ sandboxPolicy.resolve() → 工作区根
-                    上传载荷              ├ 会话 cwd / DSH_HOME + /uploads/
-                           │             ├ SHA-256 → .dfu-index.json 防重传
-                           ▼             └ base64 -d（stdin）/ node:fs 写入
+                    File 切片 / 请求体      ├ 会话 cwd / DSH_HOME + /uploads/
+                           │             ├ 先写 .dfu-tmp-*，同一遍增量 SHA-256
+                           ▼             ├ 提交：去重 → 定名 → 移入 → .dfu-index.json
+                                           └ base64 -d >> tmp（动态）/ node:fs 流式写入（静态）
 conversation.input.dock
   └ 附件卡片（持久）                     harness.handle('remove', …) / remove 路由
        └ × 关闭卡片 → 停止注入              └ pending 条目删除（文件保留）
@@ -173,7 +177,7 @@ conversation.input.dock
                                              └ 路径文本块（仅用户消息）
 ```
 
-**为什么用 `base64 -d` 而不是 Host 的 `atob`？** Host 的 `atob` 是文本语义（`Buffer.from(s, "base64").toString("utf-8")`），`fs` 服务也只支持 UTF-8 文本写入。把 base64 经 shell 服务的 `stdin` 管道给 `base64 -d`，可无损写入二进制且无需临时文件。
+**为什么动态模式要走 shell 的 `base64 -d`？** 动态插件所在的沙箱禁用了 `require`，`fs` 服务只支持 UTF-8 文本的整文件写入——二进制只能经 shell 服务的 `stdin` 管道给 `base64 -d`。分片追加（`>>`）让每条命令只承载一个分片，内存占用与文件大小无关。静态 bundle 没有这个限制，直接 `node:fs` 流式写入。
 
 ## 保存位置
 

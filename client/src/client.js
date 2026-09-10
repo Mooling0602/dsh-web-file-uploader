@@ -48,7 +48,6 @@ function createClientCore(deps) {
   const DICT = {
     zh: {
       attachTitle: '上传附件',
-      reading: '读取中…',
       uploading: '上传中…',
       saved: '已保存',
       copyPath: '复制路径',
@@ -62,7 +61,6 @@ function createClientCore(deps) {
     },
     en: {
       attachTitle: 'Attach files',
-      reading: 'Reading…',
       uploading: 'Uploading…',
       saved: 'Saved',
       copyPath: 'Copy path',
@@ -229,44 +227,49 @@ function createClientCore(deps) {
           mime: file.type || '',
           isImage: isImage,
           previewUrl: previewUrl,
-          status: 'reading',
+          status: 'uploading',
           error: null,
           path: null,
+          loaded: 0,
+          total: file.size,
         })
-        const reader = new FileReader()
-        reader.onload = () => {
-          const dataUrl = String(reader.result || '')
-          const comma = dataUrl.indexOf(',')
-          const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : ''
-          if (!base64) {
-            store.update(sessionId, id, { status: 'error', error: 'Read failed' })
-            return
+        // The File object itself rides the transport: every seam streams it
+        // (request body in the static bundle, chunked RPC in the dynamic
+        // sandbox), so nothing here reads the whole file into memory. Progress
+        // arrives per chunk and only ever updates the card's status line.
+        const onProgress = (loaded, total) => {
+          if (store.files(sessionId).some((x) => x.id === id)) {
+            store.update(sessionId, id, { loaded: loaded, total: total || file.size })
           }
-          store.update(sessionId, id, { status: 'uploading' })
-          upload({ sessionId: sessionId, name: file.name, mime: file.type || '', base64: base64 })
-            .then((res) => {
-              const stillPresent = store.files(sessionId).some((x) => x.id === id)
-              if (res && res.ok) {
-                if (stillPresent) store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
-                else {
-                  try {
-                    remove({ sessionId: sessionId, path: res.path }).catch(() => {})
-                  } catch {
-                    // host unavailable — ignore
-                  }
-                }
-              } else if (stillPresent) {
-                store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
-              }
-            })
-            .catch((err) => {
-              if (store.files(sessionId).some((x) => x.id === id)) {
-                store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
-              }
-            })
         }
-        reader.onerror = () => store.update(sessionId, id, { status: 'error', error: 'Read failed' })
-        reader.readAsDataURL(file)
+        upload({
+          sessionId: sessionId,
+          name: file.name,
+          mime: file.type || '',
+          size: file.size,
+          file: file,
+          onProgress: onProgress,
+        })
+          .then((res) => {
+            const stillPresent = store.files(sessionId).some((x) => x.id === id)
+            if (res && res.ok) {
+              if (stillPresent) store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
+              else {
+                try {
+                  remove({ sessionId: sessionId, path: res.path }).catch(() => {})
+                } catch {
+                  // host unavailable — ignore
+                }
+              }
+            } else if (stillPresent) {
+              store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
+            }
+          })
+          .catch((err) => {
+            if (store.files(sessionId).some((x) => x.id === id)) {
+              store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
+            }
+          })
       })
     }
     return react.createElement(
@@ -320,10 +323,15 @@ function createClientCore(deps) {
       }
 
       let statusNode = null
-      if (f.status === 'reading') {
-        statusNode = react.createElement('span', { className: 'dfu-chip-status' }, tFn('reading'))
-      } else if (f.status === 'uploading') {
-        statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-active' }, tFn('uploading'))
+      if (f.status === 'uploading') {
+        // Percentage once the transport has reported bytes: a streamed file
+        // never knows its total up front, so keep the plain label until then.
+        const pct = f.total > 0 ? Math.min(100, Math.floor(((f.loaded || 0) / f.total) * 100)) : 0
+        statusNode = react.createElement(
+          'span',
+          { className: 'dfu-chip-status dfu-chip-status-active' },
+          pct > 0 ? tFn('uploading') + ' ' + pct + '%' : tFn('uploading'),
+        )
       } else if (f.status === 'done') {
         statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-ok', title: f.path || '' }, tFn('saved'))
       } else {
@@ -705,15 +713,50 @@ export function apply(ctx) {
   if (react === null || react.createElement === undefined) return
   const core = createClientCore({
     react: react,
-    // Static transport: decode the base64 to raw bytes and POST them to the
-    // host webServer routes (binary-safe; the dynamic half uses host.call).
-    upload: async (args) => {
-      const bytes = Uint8Array.from(atob(args.base64), (c) => c.charCodeAt(0))
-      const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
-        '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId)
-      const res = await fetch(url, { method: 'POST', body: bytes })
-      return res.json()
-    },
+    // Static transport: the browser posts the File itself to the host route, so
+    // the page never holds the bytes (and the route never sees base64). XHR
+    // rather than fetch, because only XHR reports progress for a Blob body —
+    // the same carrier the official uploader uses.
+    upload: (args) => new Promise((resolve, reject) => {
+      if (args && args.file) {
+        const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
+          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId) +
+          '&size=' + encodeURIComponent(String((args.file && args.file.size) || args.size || 0))
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', url)
+        xhr.withCredentials = true
+        xhr.setRequestHeader('content-type', 'application/octet-stream')
+        if (typeof args.onProgress === 'function') {
+          xhr.upload.onprogress = (event) => {
+            try {
+              args.onProgress(event.loaded, event.lengthComputable ? event.total : (args.file.size || 0))
+            } catch {
+              // progress is advisory
+            }
+          }
+        }
+        xhr.onload = () => {
+          try {
+            resolve(JSON.parse(xhr.responseText || '{}'))
+          } catch {
+            resolve({ ok: false, error: 'bad response (HTTP ' + xhr.status + ')' })
+          }
+        }
+        xhr.onerror = () => resolve({ ok: false, error: 'upload transport failed' })
+        xhr.onabort = () => resolve({ ok: false, error: 'upload aborted' })
+        xhr.send(args.file)
+        return
+      }
+      // Encoded fallback for a caller that hands over bytes directly.
+      try {
+        const bytes = Uint8Array.from(atob(args.base64), (c) => c.charCodeAt(0))
+        const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
+          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId)
+        fetch(url, { method: 'POST', body: bytes }).then((res) => res.json()).then(resolve).catch(reject)
+      } catch (err) {
+        reject(err)
+      }
+    }),
     remove: async (args) => {
       const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
       await fetch(url, { method: 'POST' })

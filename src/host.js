@@ -10,6 +10,11 @@
 //   uploadsRoot(sessionId) -> Promise<string>          base dir for uploads
 //   hashBase64(base64, signal?) -> Promise<string|null> SHA-256 of decoded bytes
 //   saveUploadFile(base64, absPath) -> Promise<{ ok: boolean; error?: string }>
+//   ensureDir(absDir) -> Promise<void>                  create the upload dir
+//   hashFile(absPath) -> Promise<string|null>           SHA-256 of a file on disk
+//   moveFile(from, to) -> Promise<{ ok: boolean; error?: string }>  publish a staged file
+//   appendUploadChunk(absPath, base64) -> Promise<{ ok: boolean; error?: string }>
+//                                                       append one decoded chunk (dynamic intake)
 //   resolvePath(absPath) -> Promise<unknown>            opaque fs handle
 //   processPath(handle) -> string                       absolute path for a handle
 //   statPath(absPath) -> Promise<{ size?: number } | null>
@@ -25,8 +30,13 @@
 //   probe(line) -> void                                  diagnostics (no-op in release)
 //   log(...args) -> void
 //
-// Returns { upload, remove, delete, collect, preStep }:
+// Returns { upload, beginStream, appendStream, commitStream, abortStream, remove,
+//           delete, collect, preStep }:
 //   upload(args)   -> { ok, name, path, size, dedup? } | { ok:false, error }
+//   beginStream(args)  -> { ok, id, tempPath }               staged streaming intake
+//   appendStream(args) -> { ok, received }                   append one decoded chunk
+//   commitStream(args) -> { ok, name, path, size, dedup? }    publish the staged file
+//   abortStream(args)  -> { ok }                              drop the staged file
 //   remove(args)   -> { ok }                                 (un-inject only, keep file)
 //   delete(args)   -> { ok, removed:boolean, reason?, path? }(permanent deletion)
 //   collect()      -> runs a lazy TTL sweep over every upload root
@@ -175,7 +185,65 @@ function createHostCore(deps) {
     }
   }
 
-  // --- upload ---------------------------------------------------------------
+  // --- intake policy shared by both transports -------------------------------
+
+  // Reuse the stored copy of identical content. Returns the shared result, or
+  // null when these bytes still have to be written.
+  async function reuseExisting(sessionId, name, mime, hash, size, uploadsDir) {
+    if (!hash) return null
+    try {
+      const index = await loadIndex(uploadsDir)
+      const existing = index[hash]
+      if (!existing) return null
+      const info = await deps.statPath(existing.path)
+      if (!info) return null
+      const bytes = info.size !== undefined ? info.size : size
+      registerPending(sessionId, { name, mime, size: bytes, abs: existing.path })
+      probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
+      return { ok: true, name, path: existing.path, size: bytes, dedup: true }
+    } catch {
+      // stale index entry -> fall through and re-store
+      return null
+    }
+  }
+
+  // First free name for this upload: `name`, then `stem-1.ext`, `stem-2.ext`, ...
+  async function allocateTarget(uploadsDir, name) {
+    const dot = name.lastIndexOf('.')
+    const stem = dot > 0 ? name.slice(0, dot) : name
+    const ext = dot > 0 ? name.slice(dot) : ''
+    for (let i = 0; i < 100; i += 1) {
+      const candidate = uploadsDir + '/' + (i === 0 ? name : stem + '-' + i + ext)
+      const info = await deps.statPath(candidate)
+      if (!info) return candidate
+    }
+    return null
+  }
+
+  // Record hash -> { path, at } (future re-uploads reuse this copy), keep the
+  // session's pending reference, and kick the lazy TTL sweep.
+  async function publish(sessionId, name, mime, hash, size, uploadsDir, uploadsBase, abs) {
+    if (hash) {
+      const index = await loadIndex(uploadsDir)
+      if (!index[hash]) {
+        index[hash] = { path: abs, at: Date.now() }
+        await saveIndex(uploadsDir, index)
+      }
+    }
+    registerPending(sessionId, { name, mime, size, abs })
+    probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId) || []).length)
+    try {
+      enqueue(() => gcForRoot(uploadsBase))
+    } catch {
+      // non-fatal
+    }
+    return { ok: true, name, path: abs, size, dedup: false }
+  }
+
+  // --- upload (encoded fallback) ---------------------------------------------
+  // Base64 in one call: the shape the dynamic RPC keeps for small files and for
+  // any transport without a streaming body. Streaming intake below bypasses the
+  // MAX_BASE64_LENGTH ceiling this path needs.
 
   async function upload(args) {
     try {
@@ -190,71 +258,167 @@ function createHostCore(deps) {
 
       const uploadsBase = await deps.uploadsRoot(sessionId)
       const uploadsDir = uploadsBase + '/uploads'
+      const size = base64Size(base64)
 
-      // 1) Content hash (decoded bytes).
+      // 1) Content hash (decoded bytes), then reuse identical content.
       const hash = await deps.hashBase64(base64)
+      const reused = await reuseExisting(sessionId, name, mime, hash, size, uploadsDir)
+      if (reused) return reused
 
-      // 2) Dedup: same content already stored -> reuse, no new copy.
-      if (hash) {
-        const index = await loadIndex(uploadsDir)
-        const existing = index[hash]
-        if (existing) {
-          try {
-            const info = await deps.statPath(existing.path)
-            if (info) {
-              const size = info.size !== undefined ? info.size : base64Size(base64)
-              registerPending(sessionId, { name, mime, size, abs: existing.path })
-              probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
-              return { ok: true, name, path: existing.path, size, dedup: true }
-            }
-          } catch {
-            // index entry stale -> fall through and re-store
-          }
-        }
-      }
-
-      // 3) Allocate a non-colliding name.
-      const dot = name.lastIndexOf('.')
-      const stem = dot > 0 ? name.slice(0, dot) : name
-      const ext = dot > 0 ? name.slice(dot) : ''
-      let abs = null
-      for (let i = 0; i < 100; i += 1) {
-        const candidate = uploadsDir + '/' + (i === 0 ? name : stem + '-' + i + ext)
-        const info = await deps.statPath(candidate)
-        if (!info) {
-          abs = candidate
-          break
-        }
-      }
+      // 2) Allocate a non-colliding name and write the new copy.
+      const abs = await allocateTarget(uploadsDir, name)
       if (!abs) return { ok: false, error: 'could not allocate a file name' }
-
-      // 4) Write the new copy.
       const written = await deps.saveUploadFile(base64, abs)
       if (!written.ok) return { ok: false, error: written.error || 'save failed' }
 
-      // 5) Record hash -> { path, at } so future re-uploads reuse this copy.
-      if (hash) {
-        const index = await loadIndex(uploadsDir)
-        if (!index[hash]) {
-          index[hash] = { path: abs, at: Date.now() }
-          await saveIndex(uploadsDir, index)
-        }
-      }
-
-      registerPending(sessionId, { name, mime, size: base64Size(base64), abs })
-      probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId) || []).length)
-
-      // 6) Lazy GC after a fresh write.
-      try {
-        enqueue(() => gcForRoot(uploadsBase))
-      } catch {
-        // non-fatal
-      }
-
-      return { ok: true, name, path: abs, size: base64Size(base64), dedup: false }
+      return await publish(sessionId, name, mime, hash, size, uploadsDir, uploadsBase, abs)
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) }
     }
+  }
+
+  // --- streaming intake ------------------------------------------------------
+  // The transport moves the bytes — an HTTP request body in the static bundle,
+  // decoded chunks in the dynamic sandbox — while the core owns staging, naming,
+  // dedup, the index and pending bookkeeping. Neither path ever holds the whole
+  // file in memory, so file size is bounded by disk, not by the transport.
+
+  const staged = new Map()
+  const STAGED_TTL_MS = 6 * 60 * 60 * 1000
+
+  const tempPathFor = (uploadsDir, id) => uploadsDir + '/.dfu-tmp-' + id
+
+  // Drop a staged file: best effort, never fatal (abort paths and failed moves).
+  async function dropTemp(absPath) {
+    if (!absPath || typeof deps.deleteFile !== 'function') return
+    try {
+      await deps.deleteFile(absPath)
+    } catch {
+      // best effort
+    }
+    probe('STREAM-DROP path=' + absPath)
+  }
+
+  // Forget staged uploads nobody finished (a crashed or closed tab leaves both an
+  // entry and a partial file behind; the sweep keeps neither forever).
+  function sweepStaged() {
+    const now = Date.now()
+    for (const [id, entry] of staged) {
+      if (now - entry.at > STAGED_TTL_MS) {
+        staged.delete(id)
+        void dropTemp(entry.tempPath)
+      }
+    }
+  }
+
+  async function beginStream(args) {
+    try {
+      const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
+      const name = sanitizeName(args && args.name)
+      const mime = args && typeof args.mime === 'string' ? args.mime : ''
+      const declared = Number(args && args.size)
+      if (!name) return { ok: false, error: 'invalid file name' }
+      sweepStaged()
+      const uploadsBase = await deps.uploadsRoot(sessionId)
+      const uploadsDir = uploadsBase + '/uploads'
+      if (typeof deps.ensureDir === 'function') await deps.ensureDir(uploadsDir)
+      const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
+      const entry = {
+        sessionId: sessionId,
+        name: name,
+        mime: mime,
+        size: Number.isFinite(declared) && declared > 0 ? declared : 0,
+        received: 0,
+        uploadsBase: uploadsBase,
+        uploadsDir: uploadsDir,
+        tempPath: tempPathFor(uploadsDir, id),
+        at: Date.now(),
+      }
+      staged.set(id, entry)
+      probe('STREAM-BEGIN sid=' + sessionId + ' file=' + name)
+      return { ok: true, id: id, tempPath: entry.tempPath }
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) }
+    }
+  }
+
+  async function appendStream(args) {
+    try {
+      const id = args && typeof args.id === 'string' ? args.id : ''
+      const base64 = args && typeof args.base64 === 'string' ? args.base64 : ''
+      const entry = staged.get(id)
+      if (!entry) return { ok: false, error: 'unknown upload' }
+      if (!base64) return { ok: false, error: 'empty chunk' }
+      if (typeof deps.appendUploadChunk !== 'function') return { ok: false, error: 'append intake unavailable' }
+      const written = await deps.appendUploadChunk(entry.tempPath, base64)
+      if (!written || !written.ok) return { ok: false, error: (written && written.error) || 'append failed' }
+      entry.received += base64Size(base64)
+      entry.at = Date.now()
+      return { ok: true, received: entry.received }
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) }
+    }
+  }
+
+  // Publish a staged file: hash it (the transport may already know), reuse an
+  // identical copy when one exists, otherwise move it onto its final name.
+  async function commitStream(args) {
+    const id = args && typeof args.id === 'string' ? args.id : ''
+    const entry = staged.get(id)
+    if (!entry) return { ok: false, error: 'unknown upload' }
+    try {
+      let hash = args && typeof args.sha256 === 'string' && /^[0-9a-f]{64}$/.test(args.sha256) ? args.sha256 : null
+      if (!hash && typeof deps.hashFile === 'function') hash = await deps.hashFile(entry.tempPath)
+
+      let size = entry.received
+      try {
+        const info = await deps.statPath(entry.tempPath)
+        if (info && info.size !== undefined) size = info.size
+      } catch {
+        // keep the received-byte count
+      }
+
+      const reused = await reuseExisting(entry.sessionId, entry.name, entry.mime, hash, size, entry.uploadsDir)
+      if (reused) {
+        staged.delete(id)
+        await dropTemp(entry.tempPath)
+        return reused
+      }
+
+      const abs = await allocateTarget(entry.uploadsDir, entry.name)
+      if (!abs) {
+        staged.delete(id)
+        await dropTemp(entry.tempPath)
+        return { ok: false, error: 'could not allocate a file name' }
+      }
+      if (typeof deps.moveFile !== 'function') {
+        staged.delete(id)
+        await dropTemp(entry.tempPath)
+        return { ok: false, error: 'move unavailable' }
+      }
+      const moved = await deps.moveFile(entry.tempPath, abs)
+      if (!moved || !moved.ok) {
+        staged.delete(id)
+        await dropTemp(entry.tempPath)
+        return { ok: false, error: (moved && moved.error) || 'finalize failed' }
+      }
+      staged.delete(id)
+      probe('STREAM-COMMIT sid=' + entry.sessionId + ' file=' + entry.name + ' bytes=' + size)
+      return await publish(entry.sessionId, entry.name, entry.mime, hash, size, entry.uploadsDir, entry.uploadsBase, abs)
+    } catch (err) {
+      staged.delete(id)
+      await dropTemp(entry.tempPath)
+      return { ok: false, error: String((err && err.message) || err) }
+    }
+  }
+
+  async function abortStream(args) {
+    const id = args && typeof args.id === 'string' ? args.id : ''
+    const entry = staged.get(id)
+    if (!entry) return { ok: true }
+    staged.delete(id)
+    await dropTemp(entry.tempPath)
+    return { ok: true }
   }
 
   // --- remove (× close) ---------------------------------------------------------
@@ -511,6 +675,12 @@ function createHostCore(deps) {
 
   return {
     upload: (args) => enqueue(() => upload(args)),
+    // Staging and chunk appends touch only their own temp file; committing goes
+    // through the queue because it reads and rewrites the shared index.
+    beginStream,
+    appendStream,
+    commitStream: (args) => enqueue(() => commitStream(args)),
+    abortStream,
     remove,
     delete: (args) => enqueue(() => deleteFile(args)),
     collect: () => enqueue(() => gcForRoots()),
@@ -600,6 +770,68 @@ return {
           return { ok: false, error: String((err && err.message) || err) }
         }
       },
+      // Streaming intake inside the sandbox: the dynamic package cannot require
+      // node:fs and the fs service writes whole text only, so bytes reach disk
+      // through the shell — one decoded chunk appended per RPC call. Memory
+      // stays bounded by the chunk size instead of the file size.
+      ensureDir: async (absDir) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'mkdir -p ' + shellQuote(absDir),
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          if (result.exitCode !== 0) throw new Error('mkdir failed (exit ' + result.exitCode + ')')
+        } catch (err) {
+          throw new Error(String((err && err.message) || err))
+        }
+      },
+      appendUploadChunk: async (absPath, base64) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const dir = absPath.slice(0, absPath.lastIndexOf('/'))
+          const spec = shell.resolve({
+            command: 'mkdir -p ' + shellQuote(dir) + ' && base64 -d >> ' + shellQuote(absPath),
+            stdin: base64,
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          return result.exitCode === 0 ? { ok: true } : { ok: false, error: 'append failed (exit ' + result.exitCode + ')' }
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) }
+        }
+      },
+      hashFile: async (absPath) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'sha256sum ' + shellQuote(absPath),
+            stdoutMaxBytes: 1024,
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          if (result.exitCode !== 0) return null
+          const out = String((result.stdout && result.stdout.text) || '')
+          const m = /^[0-9a-f]{64}/.exec(out.trim())
+          return m ? m[0] : null
+        } catch {
+          return null
+        }
+      },
+      moveFile: async (from, to) => {
+        try {
+          const policy = sandboxPolicy.resolve()
+          const spec = shell.resolve({
+            command: 'mv -f ' + shellQuote(from) + ' ' + shellQuote(to),
+            sandboxPolicy: policy,
+          })
+          const result = await shell.run(spec)
+          return result.exitCode === 0 ? { ok: true } : { ok: false, error: 'move failed (exit ' + result.exitCode + ')' }
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) }
+        }
+      },
       statPath: async (absPath) => {
         try {
           const target = await fs.resolve(absPath)
@@ -669,6 +901,12 @@ return {
     })
 
     harness.handle('upload', (args) => core.upload(args))
+    // Chunked streaming intake (the dynamic client slices the File and sends
+    // one base64 chunk per call; finish hashes and publishes it).
+    harness.handle('upload-begin', (args) => core.beginStream(args))
+    harness.handle('upload-chunk', (args) => core.appendStream(args))
+    harness.handle('upload-finish', (args) => core.commitStream(args))
+    harness.handle('upload-abort', (args) => core.abortStream(args))
     harness.handle('remove', (args) => core.remove(args))
     harness.handle('delete', (args) => core.delete(args))
     harness.handle('dfu-config-get', () => getConfig())

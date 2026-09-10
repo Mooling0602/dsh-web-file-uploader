@@ -154,9 +154,16 @@ kept (`removed: false`) but this session's card is still cleared.
 
 ## Attachment size limits
 
-- **~48 MiB per file** (dynamic mode: 64 MiB base64 payload cap over the RPC,
-  ≈48 MiB decoded; static mode: the same cap enforced while streaming the
-  HTTP body). Files above the cap are rejected with a clear error on the card.
+- **No per-file cap.** The static bundle writes the request body through as it
+  arrives while hashing the same pass; the dynamic plugin has the browser slice
+  the File and append one chunk per RPC call. Neither path holds the file in
+  memory (a 120 MiB upload grew the process by < 1 MiB), so the only bound left
+  is disk space.
+- The card shows a percentage while uploading: XHR `upload.onprogress` in the
+  static bundle, sent-chunk accounting in the dynamic plugin.
+- **The fallback path still has a ceiling.** A caller that hands over base64
+  instead of a `File` (the old call shape) stays under the single-shot 64 MiB
+  base64 / ≈48 MiB payload cap; that path is kept for compatibility only.
 - Images additionally follow the deployment's `attachments` limits (per-message
   byte/pixel caps) when injected natively for multimodal models.
 
@@ -225,12 +232,14 @@ before re-adding it. Details: [PUBLISHING.md](PUBLISHING.md#update).
 ```
 Browser (Client)                          DSH host (Host)
 ─────────────                             ─────────────────
-conversation.input.left                   harness.handle('upload', …)   [dynamic]
-  └ paperclip ── FileReader ──┐           webServer route POST /upload  [static]
+conversation.input.left                   harness.handle('upload-begin'/'upload-chunk'/
+  └ paperclip ── File (sliced) ┐              'upload-finish'/'upload-abort')  [dynamic]
+                              │           webServer route POST /upload        [static]
                               ▼           ┌ sandboxPolicy.resolve() → workspace root
-                    upload payload        ├ session cwd / DSH_HOME + /uploads/
-                              │           ├ SHA-256 → .dfu-index.json dedup
-                              ▼           └ base64 -d (stdin) / node:fs write
+              File slices / body          ├ session cwd / DSH_HOME + /uploads/
+                              │           ├ stage .dfu-tmp-*, incremental SHA-256
+                              ▼           ├ commit: dedup → name → move → .dfu-index.json
+                                          └ base64 -d >> tmp (dynamic) / node:fs stream (static)
 conversation.input.dock
   └ attachment cards (persist)            harness.handle('remove', …) / remove route
        └ × closes card → stop injecting     └ pending entry deleted (file kept)
@@ -244,10 +253,12 @@ conversation.input.dock
                                              └ path text block (user messages only)
 ```
 
-Why `base64 -d` instead of the Host `atob`? The Host `atob` is text-oriented
-(`Buffer.from(s, "base64").toString("utf-8")`) and the `fs` service only writes
-UTF-8 text. Piping base64 through the shell service's `stdin` writes binary
-losslessly with no temp files.
+Why does the dynamic mode go through the shell's `base64 -d`? The dynamic
+sandbox disables `require`, and the `fs` service only writes whole UTF-8 text —
+so binary has no other way to disk than the shell service's `stdin`. Appending
+per chunk (`>>`) keeps each command bounded by the chunk size instead of the
+file size. The static bundle has no such restriction and streams with
+`node:fs` instead.
 
 ## Storage location
 
