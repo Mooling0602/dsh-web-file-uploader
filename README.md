@@ -129,8 +129,9 @@ race in-flight writes; no background task is required.
   (days); a bare number with no unit is treated as days (legacy behavior).
   `0` (or an empty/invalid value) **disables automatic GC** — files are only
   removed when you explicitly click 🗑.
-- **Configure** in **Settings → File uploads** (native DSH settings panel) —
-  a single field that persists via the `settings` service namespace
+- **Configure** in **Settings → File uploads** (native DSH settings panel; the
+  tab carries its own paperclip mark, so it never reads as the gear rows other
+  plugins get) — a single field that persists via the `settings` service namespace
   `dsh-web-file-uploader` (`{ ttl }`). The environment variable
   `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a fallback before
   the default. In dynamic (session) mode the setting lives in memory; in the

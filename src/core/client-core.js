@@ -34,6 +34,15 @@ export function createClientCore(deps) {
 
   const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
+  // Settings-nav mark. The shell paints the settings nav from a fixed id→icon
+  // map and falls back to the plain gear for every id it does not know, so a
+  // plugin cannot declare its own glyph through the slot. This is the shell's
+  // own 16px paperclip outline (ic_ds_paperclip_outline_16, filled style on a
+  // 16-unit grid) so the mark speaks the same icon language as the rows around
+  // it — and the same paperclip the composer button shows.
+  const NAV_GLYPH_PATH =
+    'M5.5498 9.75V5H6.9502V9.75C6.9502 10.3299 7.4201 10.7998 8 10.7998C8.5799 10.7998 9.0498 10.3299 9.0498 9.75V4.5C9.0498 2.9536 7.7964 1.7002 6.25 1.7002C4.7036 1.7002 3.4502 2.9536 3.4502 4.5V9.75C3.4502 12.2629 5.4871 14.2998 8 14.2998C10.5129 14.2998 12.5498 12.2629 12.5498 9.75V4H13.9502V9.75C13.9502 13.0361 11.2861 15.7002 8 15.7002C4.71391 15.7002 2.0498 13.0361 2.0498 9.75V4.5C2.04981 2.1804 3.9304 0.299806 6.25 0.299805C8.5696 0.299805 10.4502 2.1804 10.4502 4.5V9.75C10.4502 11.1031 9.3531 12.2002 8 12.2002C6.6469 12.2002 5.5498 11.1031 5.5498 9.75Z'
+
   const DICT = {
     zh: {
       attachTitle: '上传附件',
@@ -482,6 +491,14 @@ export function createClientCore(deps) {
 body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
 .dfu-settings-save:disabled { opacity: .6; cursor: default; }
 .dfu-settings-saved { font-size: 12px; color: var(--dsw-alias-state-success-primary, #22c55e); }
+/* Settings-tab mark. At rest the row keeps the theme's monochrome icon
+   language (the glyph inherits the cell's label color via currentColor, like
+   every shell icon); it takes the theme-independent --dsw-static-deepseek-450
+   accent only while this section is the open one. The shell flags the active
+   nav cell with aria-current="true", so one selector covers both themes and
+   needs no script on tab switches. */
+.dfu-nav-mark { flex: none; }
+nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek-450, #5686fe); }
 `
 
   // --- settings panel ------------------------------------------------------
@@ -545,6 +562,71 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
     )
   }
 
+  // --- settings nav mark ----------------------------------------------------
+
+  // Give the plugin's settings tab its own glyph. The shell renders every
+  // unknown section id with the fallback gear, so the row is upgraded in place
+  // once it exists in the DOM: the fallback svg is hidden (never detached —
+  // React owns that node, and removing a node behind React's back makes its
+  // unmount pass throw) and the paperclip is inserted ahead of it. A settings
+  // tab then reads as this plugin at a glance instead of as a second "General".
+  // The glyph is monochrome at rest and only takes the accent while the
+  // section is open — a pure CSS state, driven by the cell's aria-current.
+  function installSettingsNavMark() {
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+    const NS = 'http://www.w3.org/2000/svg'
+    const build = () => {
+      const svg = document.createElementNS(NS, 'svg')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('width', '16')
+      svg.setAttribute('height', '16')
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('aria-hidden', 'true')
+      svg.setAttribute('data-dfu-mark', 'settings-nav')
+      svg.setAttribute('class', 'dfu-nav-mark')
+      const path = document.createElementNS(NS, 'path')
+      path.setAttribute('d', NAV_GLYPH_PATH)
+      path.setAttribute('fill', 'currentColor')
+      svg.appendChild(path)
+      return svg
+    }
+    const patch = () => {
+      const label = tFn('settingsTitle')
+      const cells = document.querySelectorAll('nav button')
+      for (let i = 0; i < cells.length; i += 1) {
+        const cell = cells[i]
+        const text = cell.textContent
+        if (typeof text !== 'string' || text.trim() !== label) continue
+        const fallback = cell.querySelector('svg')
+        // No icon (unexpected shell shape), already ours, or already patched.
+        if (fallback === null || fallback.getAttribute('data-dfu-mark') !== null) continue
+        if (cell.querySelector('[data-dfu-mark]') !== null) continue
+        fallback.style.display = 'none'
+        cell.insertBefore(build(), fallback)
+      }
+    }
+    let scheduled = false
+    const schedule = () => {
+      if (scheduled) return
+      scheduled = true
+      const run = () => {
+        scheduled = false
+        patch()
+      }
+      // Coalesce a mutation burst into one scan; the settings panel is closed
+      // most of the time, so the scan is a no-op then.
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+      else setTimeout(run, 16)
+    }
+    patch()
+    const observer = new MutationObserver(schedule)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  }
+
   // --- plugin entry ---------------------------------------------------------
 
   function apply(ctx) {
@@ -562,6 +644,7 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
       }
     }
     insertStyles(CSS)
+    installSettingsNavMark()
     slots.inject('settings.section', () =>
       slots.register(
         { name: 'settings.section', id: 'dfu-settings', order: 40, label: () => tFn('settingsTitle'), inject: () => ({}) },
