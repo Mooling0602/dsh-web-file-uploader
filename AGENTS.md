@@ -58,6 +58,10 @@ Everything a **human user sees in the UI** is localized through the app's
   (runs `build-dynamic.mjs` + `build-client.mjs`).
 - **Runtime dynamic plugin**: redeploy the regenerated `src/host.js` /
   `src/client.js` via `cordis_define` + `cordis_run`.
+- **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
+  than copying `lib/` by hand. The static host half is a thin seam that imports
+  `../src/core/*`, so a partial copy leaves it calling the core revision it
+  replaced — which only surfaces at runtime, as a missing method on `core`.
 
 ## Workflow notes
 
