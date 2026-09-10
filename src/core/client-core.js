@@ -75,6 +75,11 @@ export function createClientCore(deps) {
       replaceHint: '开启后隐藏官方按钮，本插件按钮移到它的位置上，输入框左侧只保留一个上传入口。',
       replaceScope: '上传、进度与自动清理仍由本插件负责；保存后立即生效，无需刷新。',
       replaceRestore: '关闭开关并保存即可恢复官方按钮；停用或卸载插件时也会自动恢复。',
+      cancelling: '正在取消…',
+      cancelTitle: '取消上传？',
+      cancelBody: '这个文件还在上传中。取消会立刻中断传输，并丢弃已经发送的部分；返回则继续上传，文件照常保存。',
+      cancelConfirm: '确认取消上传',
+      cancelKeep: '返回继续上传',
     },
     en: {
       attachTitle: 'Attach files',
@@ -92,6 +97,11 @@ export function createClientCore(deps) {
       replaceHint: 'Hides the official button and moves this plugin’s button into its place, so the composer keeps a single upload control.',
       replaceScope: 'Uploading, progress and auto-cleanup still come from this plugin; saving applies at once, no refresh needed.',
       replaceRestore: 'Turning the switch off and saving brings the official button back; disabling or removing the plugin restores it too.',
+      cancelling: 'Cancelling…',
+      cancelTitle: 'Cancel this upload?',
+      cancelBody: 'This file is still uploading. Cancelling stops the transfer now and throws away what has been sent; going back keeps uploading and saves the file as usual.',
+      cancelConfirm: 'Cancel upload',
+      cancelKeep: 'Keep uploading',
     },
   }
 
@@ -189,19 +199,55 @@ export function createClientCore(deps) {
     }
   }
 
-  // Remove an attachment card: notify the host (stop injecting this file) and
-  // drop it from the local store. The path may not be known yet if the upload
-  // is still in flight — the upload completion handler covers that case.
+  // Fire-and-forget un-reference: the host keeps the file on disk, this session
+  // just stops injecting it.
+  const unref = (sessionId, path) => {
+    if (!path) return
+    try {
+      remove({ sessionId: sessionId, path: path }).catch(() => {})
+    } catch {
+      // host unavailable — ignore
+    }
+  }
+
+  // Close an attachment card. Once the file is on the host this only
+  // un-references it (the model may still read it from the uploads folder).
+  //
+  // A card whose upload is still moving is a different story: the bytes are in
+  // flight, and stopping them means throwing away what has already been sent.
+  // Rather than deciding that silently — which would either waste the transfer
+  // or discard a file the user wanted — the card asks first. "Keep uploading"
+  // leaves the card (and its reference) alone, so no orphan copy is left behind
+  // either way.
   const removeCard = (sessionId, id) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
-    if (entry && entry.path) {
-      try {
-        remove({ sessionId: sessionId, path: entry.path }).catch(() => {})
-      } catch {
-        // host unavailable — ignore
-      }
+    if (!entry) return
+    if (entry.status === 'uploading' && entry.controller) {
+      store.update(sessionId, id, { confirmCancel: true })
+      return
     }
+    if (entry.path) unref(sessionId, entry.path)
     store.remove(sessionId, id)
+  }
+
+  // "Cancel upload": stop the transport now and drop the staged bytes. The card
+  // stays in a cancelling state until the transport settles, because losing the
+  // race (the host had already published the file) still owes the host an
+  // un-reference — see the completion handler in AttachButton.
+  const cancelUpload = (sessionId, id) => {
+    const entry = store.files(sessionId).find((x) => x.id === id)
+    if (!entry) return
+    store.update(sessionId, id, { confirmCancel: false, status: 'cancelling' })
+    try {
+      entry.controller.abort()
+    } catch {
+      // already settled — the completion handler closes the card
+    }
+  }
+
+  // "Keep uploading": dismiss the question and let the transfer run on.
+  const keepUploading = (sessionId, id) => {
+    store.update(sessionId, id, { confirmCancel: false })
   }
 
   // Permanently delete an attachment: drop the card AND remove the file from
@@ -241,6 +287,9 @@ export function createClientCore(deps) {
         } catch {
           previewUrl = null
         }
+        // One controller per file: the card's × can stop this transfer without
+        // touching any other one in the same batch.
+        const controller = typeof AbortController === 'function' ? new AbortController() : null
         store.add(sessionId, {
           id: id,
           name: file.name,
@@ -253,6 +302,8 @@ export function createClientCore(deps) {
           path: null,
           loaded: 0,
           total: file.size,
+          controller: controller,
+          confirmCancel: false,
         })
         // The File object itself rides the transport: every seam streams it
         // (request body in the static bundle, chunked RPC in the dynamic
@@ -269,27 +320,38 @@ export function createClientCore(deps) {
           mime: file.type || '',
           size: file.size,
           file: file,
+          signal: controller === null ? undefined : controller.signal,
           onProgress: onProgress,
         })
           .then((res) => {
-            const stillPresent = store.files(sessionId).some((x) => x.id === id)
+            const entry = store.files(sessionId).find((x) => x.id === id)
+            const cancelled = entry !== undefined && entry.status === 'cancelling'
             if (res && res.ok) {
-              if (stillPresent) store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
-              else {
-                try {
-                  remove({ sessionId: sessionId, path: res.path }).catch(() => {})
-                } catch {
-                  // host unavailable — ignore
-                }
+              if (cancelled) {
+                // Lost the race by a hair: the host had already published the
+                // file. Take the reference straight back out so it is never
+                // injected and the TTL sweep can reclaim it.
+                store.remove(sessionId, id)
+                unref(sessionId, res.path)
+              } else if (entry !== undefined) {
+                store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
+              } else {
+                unref(sessionId, res.path)
               }
-            } else if (stillPresent) {
+            } else if (cancelled) {
+              store.remove(sessionId, id)
+            } else if (entry !== undefined) {
               store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
             }
           })
           .catch((err) => {
-            if (store.files(sessionId).some((x) => x.id === id)) {
-              store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
+            const entry = store.files(sessionId).find((x) => x.id === id)
+            if (entry === undefined) return
+            if (entry.status === 'cancelling') {
+              store.remove(sessionId, id)
+              return
             }
+            store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
           })
       })
     }
@@ -355,6 +417,8 @@ export function createClientCore(deps) {
         )
       } else if (f.status === 'done') {
         statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-ok', title: f.path || '' }, tFn('saved'))
+      } else if (f.status === 'cancelling') {
+        statusNode = react.createElement('span', { className: 'dfu-chip-status' }, tFn('cancelling'))
       } else {
         statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-error', title: f.error || '' }, f.error || tFn('failed'))
       }
@@ -395,13 +459,16 @@ export function createClientCore(deps) {
           ),
         )
       }
-      actions.push(
-        react.createElement(
-          'button',
-          { key: 'remove', type: 'button', className: 'dfu-chip-remove', title: tFn('remove'), onClick: () => removeCard(sessionId, f.id) },
-          '×',
-        ),
-      )
+      // While a cancel is in flight the card has nothing left to decide.
+      if (f.status !== 'cancelling') {
+        actions.push(
+          react.createElement(
+            'button',
+            { key: 'remove', type: 'button', className: 'dfu-chip-remove', title: tFn('remove'), onClick: () => removeCard(sessionId, f.id) },
+            '×',
+          ),
+        )
+      }
       chips.push(
         react.createElement(
           'div',
@@ -417,6 +484,53 @@ export function createClientCore(deps) {
         ),
       )
     })
+    // Confirmation surface for × on a card whose upload is still moving: both
+    // answers are real, and both avoid leaving an orphan copy behind — cancel
+    // drops the staged bytes, keep leaves the card (and its reference) alone.
+    // Escape and a backdrop click take the safe branch.
+    const asking = files.find((f) => f.confirmCancel === true)
+    if (asking !== undefined) {
+      chips.push(
+        react.createElement(
+          'div',
+          {
+            key: 'dfu-cancel-confirm',
+            className: 'dfu-modal-backdrop',
+            onClick: () => keepUploading(sessionId, asking.id),
+          },
+          react.createElement(
+            'div',
+            {
+              className: 'dfu-modal',
+              role: 'dialog',
+              'aria-modal': 'true',
+              'aria-label': tFn('cancelTitle'),
+              onClick: (event) => event.stopPropagation(),
+              onKeyDown: (event) => {
+                if (event.key === 'Escape') keepUploading(sessionId, asking.id)
+              },
+            },
+            react.createElement('div', { className: 'dfu-modal-title' }, tFn('cancelTitle')),
+            react.createElement('div', { className: 'dfu-modal-body' }, tFn('cancelBody')),
+            react.createElement('div', { className: 'dfu-modal-file', title: asking.name }, asking.name),
+            react.createElement(
+              'div',
+              { className: 'dfu-modal-actions' },
+              react.createElement(
+                'button',
+                { type: 'button', className: 'dfu-modal-cancel', onClick: () => cancelUpload(sessionId, asking.id) },
+                tFn('cancelConfirm'),
+              ),
+              react.createElement(
+                'button',
+                { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: () => keepUploading(sessionId, asking.id) },
+                tFn('cancelKeep'),
+              ),
+            ),
+          ),
+        ),
+      )
+    }
     return react.createElement('div', { className: 'dfu-dock' }, chips)
   }
 
@@ -501,6 +615,41 @@ export function createClientCore(deps) {
   color: var(--dsw-alias-state-error-primary, #ef4444);
   background: var(--dsw-alias-bg-layer-1, rgba(127, 127, 127, 0.12));
 }
+/* Cancel-upload confirmation. The transfer is still running while this is open,
+   so the dialog stays small and the safe answer ("keep uploading") is the
+   focused default — Escape and a backdrop click take it too. */
+.dfu-modal-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .35);
+}
+.dfu-modal {
+  box-sizing: border-box; width: min(360px, calc(100vw - 32px));
+  display: grid; gap: 10px; padding: 16px; border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #1b1c1e);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(127, 127, 127, .25));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+}
+.dfu-modal-title { font-size: 14px; font-weight: 600; }
+.dfu-modal-body { font-size: 13px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #6b7280); }
+.dfu-modal-file {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+}
+.dfu-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dfu-modal-actions button { padding: 5px 14px; font-size: 13px; border-radius: 8px; cursor: pointer; }
+.dfu-modal-cancel {
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, .3));
+  background: transparent; color: var(--dsw-alias-state-error-primary, #ef4444);
+}
+.dfu-modal-cancel:hover { border-color: var(--dsw-alias-state-error-primary, #ef4444); }
+.dfu-modal-keep {
+  border: 1px solid var(--dsw-alias-brand-primary, #4d6bfe);
+  background: var(--dsw-alias-brand-primary, #4d6bfe); color: #fff;
+}
+body[data-ds-dark-theme] .dfu-modal-keep { color: #000; }
 .dfu-settings { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
 .dfu-settings-row { display: flex; align-items: center; gap: 10px; }
 .dfu-settings-label { font-size: 13px; font-weight: 500; white-space: nowrap; }

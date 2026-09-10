@@ -59,15 +59,43 @@ export function apply(ctx) {
             }
           }
         }
+        // The card's × can abandon this transfer: aborting the XHR closes the
+        // request, and the host route drops the staged file it was still
+        // writing (a closed tab takes the same path).
+        const signal = args.signal
+        const onAbort = () => {
+          try {
+            xhr.abort()
+          } catch {
+            // already settled
+          }
+        }
+        const detach = () => {
+          if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort)
+        }
+        if (signal) {
+          if (signal.aborted === true) {
+            resolve({ ok: false, error: 'upload aborted' })
+            return
+          }
+          if (typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort)
+        }
         xhr.onload = () => {
+          detach()
           try {
             resolve(JSON.parse(xhr.responseText || '{}'))
           } catch {
             resolve({ ok: false, error: 'bad response (HTTP ' + xhr.status + ')' })
           }
         }
-        xhr.onerror = () => resolve({ ok: false, error: 'upload transport failed' })
-        xhr.onabort = () => resolve({ ok: false, error: 'upload aborted' })
+        xhr.onerror = () => {
+          detach()
+          resolve({ ok: false, error: 'upload transport failed' })
+        }
+        xhr.onabort = () => {
+          detach()
+          resolve({ ok: false, error: 'upload aborted' })
+        }
         xhr.send(args.file)
         return
       }
@@ -76,7 +104,9 @@ export function apply(ctx) {
         const bytes = Uint8Array.from(atob(args.base64), (c) => c.charCodeAt(0))
         const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
           '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId)
-        fetch(url, { method: 'POST', body: bytes }).then((res) => res.json()).then(resolve).catch(reject)
+        const init = { method: 'POST', body: bytes }
+        if (args.signal) init.signal = args.signal
+        fetch(url, init).then((res) => res.json()).then(resolve).catch(reject)
       } catch (err) {
         reject(err)
       }

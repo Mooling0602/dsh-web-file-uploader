@@ -35,9 +35,17 @@ return {
           size: file.size,
         })
         if (!begun || begun.ok === false) return begun || { ok: false, error: 'upload-begin failed' }
+        // The card's × can abandon this transfer between chunks: drop the staged
+        // slices instead of finishing the file.
+        const signal = args.signal
+        const aborted = () => signal !== undefined && signal !== null && signal.aborted === true
         let sent = 0
         try {
           while (sent < file.size) {
+            if (aborted()) {
+              await host.call('upload-abort', { id: begun.id })
+              return { ok: false, error: 'upload aborted' }
+            }
             const slice = file.slice(sent, Math.min(sent + CHUNK_BYTES, file.size))
             const base64 = await readChunkBase64(slice)
             const res = await host.call('upload-chunk', { id: begun.id, base64: base64 })
@@ -57,6 +65,10 @@ return {
         } catch (err) {
           await host.call('upload-abort', { id: begun.id })
           return { ok: false, error: String((err && err.message) || err) }
+        }
+        if (aborted()) {
+          await host.call('upload-abort', { id: begun.id })
+          return { ok: false, error: 'upload aborted' }
         }
         return host.call('upload-finish', { id: begun.id })
       },

@@ -178,6 +178,14 @@ own attach button at 2.
 | `×` close | `remove` | **Kept** — model may re-read it |
 | 🗑 delete | `delete` | **Removed permanently** |
 
+Closing a card whose upload is **still in flight** asks first, because the bytes
+are still moving and both answers are real: *Cancel upload* aborts the transfer
+and drops the staged bytes (nothing lands on disk), while *Keep uploading*
+dismisses the question and leaves the card — and, once it finishes, its
+reference — intact. Neither answer leaves an orphan copy behind, and the
+question only appears while the transfer runs: a finished card still closes in
+one click.
+
 The `delete` host call drops this session's reference, checks that no other
 live session references the same deduplicated copy, and only then unlinks the
 file and scrubs the index. If another session still references it, the file is
