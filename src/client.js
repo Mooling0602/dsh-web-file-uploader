@@ -28,8 +28,23 @@ function createClientCore(deps) {
   const configSet = deps.configSet
   const insertStyles = deps.insertStyles || (() => {})
 
+  // Composer mark: the shell's own 16px paperclip outline
+  // (ic_ds_paperclip_outline_16, filled style), rotated 45° so it keeps the
+  // diagonal this plugin has always drawn next to the official upright clip.
+  //
+  // The rotation is lossless: rotating the upright glyph (ink bbox 11.9 x 15.4
+  // units) turns its box into 19.304 x 19.305, so instead of scaling the glyph
+  // down to fit 16 units — which thins every stroke by 0.83 — the viewBox grows
+  // to hold the rotated bbox and the SVG is rendered larger by the same factor.
+  // At 19.704 units the official 0.875 px/unit (14px / 16 units) is preserved:
+  // same stroke weight, same clip length, only the axis differs.
   const PAPERCLIP_PATH =
-    'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'
+    'M5.5498 9.75V5H6.9502V9.75C6.9502 10.3299 7.4201 10.7998 8 10.7998C8.5799 10.7998 9.0498 10.3299 9.0498 9.75V4.5C9.0498 2.9536 7.7964 1.7002 6.25 1.7002C4.7036 1.7002 3.4502 2.9536 3.4502 4.5V9.75C3.4502 12.2629 5.4871 14.2998 8 14.2998C10.5129 14.2998 12.5498 12.2629 12.5498 9.75V4H13.9502V9.75C13.9502 13.0361 11.2861 15.7002 8 15.7002C4.71391 15.7002 2.0498 13.0361 2.0498 9.75V4.5C2.04981 2.1804 3.9304 0.299806 6.25 0.299805C8.5696 0.299805 10.4502 2.1804 10.4502 4.5V9.75C10.4502 11.1031 9.3531 12.2002 8 12.2002C6.6469 12.2002 5.5498 11.1031 5.5498 9.75Z'
+  const PAPERCLIP_TRANSFORM = 'translate(8 8) rotate(45) translate(-8 -8)'
+  // Rotated ink bbox (symmetric about the 8,8 centre) plus a 0.2-unit hair of
+  // air, rendered at 19.704 x 0.875 = 17.24px so px-per-unit matches the shell.
+  const PAPERCLIP_VIEW_BOX = '-1.852 -1.852 19.704 19.704'
+  const PAPERCLIP_SIZE = 17.24
 
   const TRASH_PATH =
     'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z'
@@ -279,17 +294,17 @@ function createClientCore(deps) {
       react.createElement(
         'svg',
         {
-          width: 18,
-          height: 18,
-          viewBox: '0 0 24 24',
+          width: PAPERCLIP_SIZE,
+          height: PAPERCLIP_SIZE,
+          viewBox: PAPERCLIP_VIEW_BOX,
           fill: 'none',
-          stroke: 'currentColor',
-          strokeWidth: 1.8,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
           'aria-hidden': 'true',
         },
-        react.createElement('path', { d: PAPERCLIP_PATH }),
+        react.createElement('path', {
+          d: PAPERCLIP_PATH,
+          fill: 'currentColor',
+          transform: PAPERCLIP_TRANSFORM,
+        }),
       ),
     )
   }
@@ -400,17 +415,18 @@ function createClientCore(deps) {
   }
 
   const CSS = `
+/* Composer button chrome: the shell's own .add control (28px circle, solid
+   resting fill, label-primary glyph) so the two paperclips read as siblings
+   sitting in the same row — the glyph's diagonal is what tells ours apart. */
 .dfu-attach {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 50%;
-  color: var(--dsw-alias-label-secondary, #8a8f98);
+  display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 999px; corner-shape: round;
+  background: var(--dsw-specific-selector, rgba(127, 127, 127, .12));
+  color: var(--dsw-alias-label-primary, #333);
   cursor: pointer; user-select: none; flex: none;
 }
 .dfu-attach:hover {
-  /* theme-aware hover background: light => #F2F3F4 (rgba(38,49,72,.06) over white),
-     dark => rgba(255,255,255,.08) via body[data-ds-dark-theme] token swap */
-  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, .06));
-  color: var(--dsw-alias-label-primary, #333);
+  background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127, 127, 127, .18));
 }
 .dfu-dock {
   box-sizing: border-box;

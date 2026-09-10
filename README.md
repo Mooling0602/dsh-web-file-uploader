@@ -13,9 +13,11 @@ re-uploads.
 
 ## Features
 
-- 📎 Paperclip attach button in the composer tool row (thin line, circular
-  theme-aware hover background via `--dsw-alias-interactive-bg-hover`,
-  light ≈ `#F2F3F4` / dark ≈ white 8%)
+- 📎 Paperclip attach button in the composer tool row, wearing the official
+  attach button's chrome (28px circle, `--dsw-specific-selector` fill, 14px
+  filled glyph, `--dsw-alias-interactive-bg-hover-solid` hover) with the
+  paperclip rotated 45° to keep this plugin's long-standing diagonal, so the
+  two buttons stay tellable apart at a glance
 - Multi-file selection with **preview-style attachment cards** (image
   thumbnails) in the dock above the composer: reading → uploading → saved,
   with copy-path and remove buttons
