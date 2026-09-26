@@ -98,7 +98,8 @@ function createClientCore(deps) {
       manageSelected: '已选 {n} 项',
       manageTotal: '{n} 个文件 · {size}',
       manageInUse: '使用中',
-      manageInUseHint: '正在被会话引用，请在对话页面的文件卡片上删除。',
+      manageInUseHint: '正在被会话引用，请在对话页面的文件卡片上点 × 或垃圾桶解除；重启 dsh web 也会清空全部引用记录。',
+      manageInUseNotice: '带「使用中」标记的文件由会话引用，暂时无法在这里删除。请在对话页面的文件卡片上点 × 或垃圾桶解除引用，或重启 dsh web 清空全部引用记录后回来刷新。',
       manageOverdue: '已过期待清理',
       manageMissing: '文件已丢失',
       manageDelete: '删除所选',
@@ -142,7 +143,8 @@ function createClientCore(deps) {
       manageSelected: '{n} selected',
       manageTotal: '{n} files · {size}',
       manageInUse: 'In use',
-      manageInUseHint: 'Referenced by a session; delete it from the file card in the conversation instead.',
+      manageInUseHint: 'Referenced by a session. Clear it with the × or the trash on the file card in the conversation, or restart dsh web to drop every reference.',
+      manageInUseNotice: 'The files marked "In use" are referenced by a session and cannot be deleted here yet. Clear a reference with the × or the trash on the conversation\u2019s file card, or restart dsh web to drop every reference, then refresh.',
       manageOverdue: 'Past retention',
       manageMissing: 'Missing on disk',
       manageDelete: 'Delete selected',
@@ -812,6 +814,15 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   color: var(--dsw-alias-label-secondary, #8a8f98);
 }
 .dfu-manage-badge-use { color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.dfu-manage-notice {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary, #8a8f98);
+  background: var(--dsw-alias-bg-layer-3, rgba(128, 128, 128, .1));
+  border-radius: var(--dsw-radius-md, 8px);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
 .dfu-manage-delete { margin-left: auto; }
 .dfu-manage-refresh {
   font: inherit;
@@ -972,6 +983,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     }, [])
 
     const items = rows || []
+    const inUseCount = items.filter((f) => f.inUse).length
     const selectable = items.filter((f) => !f.inUse && f.exists)
     const selectedPaths = Object.keys(checked).filter((k) => checked[k])
     const selectedSet = {}
@@ -1051,6 +1063,12 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           react.createElement('span', { className: 'dfu-manage-count' }, tf('manageTotal', { n: items.length, size: formatSize(totalBytes) })),
         ),
       )
+
+      // Say it once above the list rather than only in a per-row tooltip: a
+      // locked row is the one thing here the user cannot resolve in this panel.
+      if (inUseCount > 0) {
+        children.push(react.createElement('div', { className: 'dfu-manage-notice' }, tFn('manageInUseNotice')))
+      }
 
       const list = items.map((f) => {
         // A referenced file, or one whose bytes are already gone, is shown but
