@@ -53,12 +53,16 @@ function createClientCore(deps) {
 
   // Settings-nav mark. The shell paints the settings nav from a fixed id→icon
   // map and falls back to the plain gear for every id it does not know, so a
-  // plugin cannot declare its own glyph through the slot. This is the shell's
-  // own 16px paperclip outline (ic_ds_paperclip_outline_16, filled style on a
-  // 16-unit grid) so the mark speaks the same icon language as the rows around
-  // it — and the same paperclip the composer button shows.
-  const NAV_GLYPH_PATH =
-    'M5.5498 9.75V5H6.9502V9.75C6.9502 10.3299 7.4201 10.7998 8 10.7998C8.5799 10.7998 9.0498 10.3299 9.0498 9.75V4.5C9.0498 2.9536 7.7964 1.7002 6.25 1.7002C4.7036 1.7002 3.4502 2.9536 3.4502 4.5V9.75C3.4502 12.2629 5.4871 14.2998 8 14.2998C10.5129 14.2998 12.5498 12.2629 12.5498 9.75V4H13.9502V9.75C13.9502 13.0361 11.2861 15.7002 8 15.7002C4.71391 15.7002 2.0498 13.0361 2.0498 9.75V4.5C2.04981 2.1804 3.9304 0.299806 6.25 0.299805C8.5696 0.299805 10.4502 2.1804 10.4502 4.5V9.75C10.4502 11.1031 9.3531 12.2002 8 12.2002C6.6469 12.2002 5.5498 11.1031 5.5498 9.75Z'
+  // plugin cannot declare its own glyph through the slot. The nav row
+  // therefore gets the same paperclip the composer button shows — same path,
+  // same transform, same viewBox and same rendered size, so the two are one
+  // drawing in two places (see installSettingsNavMark).
+  //
+  // Artwork revision of that mark. A live page that hot-swaps this bundle
+  // keeps the mark the previous revision inserted (React does not own the
+  // node), so the stamp is how the next pass tells "already current" apart
+  // from "stale, redraw".
+  const NAV_MARK_REV = '2'
 
   const DICT = {
     zh: {
@@ -706,7 +710,11 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
    accent only while this section is the open one. The shell flags the active
    nav cell with aria-current="true", so one selector covers both themes and
    needs no script on tab switches. */
-.dfu-nav-mark { flex: none; }
+/* The mark's own box is the composer button's 17.24px, so the two clips are
+   pixel-identical rather than merely similar. Half the difference to the nav's
+   16px icon column (0.62px) is taken back on each side, which keeps the ink
+   centred on the column and leaves every sibling row's label offset unchanged. */
+.dfu-nav-mark { flex: none; margin: calc((16px - 17.24px) / 2); }
 nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek-450, #5686fe); }
 `
 
@@ -800,29 +808,40 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
 
   // --- settings nav mark ----------------------------------------------------
 
-  // Give the plugin's settings tab its own glyph. The shell renders every
-  // unknown section id with the fallback gear, so the row is upgraded in place
-  // once it exists in the DOM: the fallback svg is hidden (never detached —
-  // React owns that node, and removing a node behind React's back makes its
-  // unmount pass throw) and the paperclip is inserted ahead of it. A settings
-  // tab then reads as this plugin at a glance instead of as a second "General".
-  // The glyph is monochrome at rest and only takes the accent while the
-  // section is open — a pure CSS state, driven by the cell's aria-current.
+  // Give the plugin's settings tab its own glyph: the composer's diagonal
+  // paperclip (identical path, transform and viewBox, so the two marks are the
+  // same drawing at two render scales). The shell renders every unknown
+  // section id with the fallback gear, so the row is upgraded in place once it
+  // exists in the DOM: the fallback svg is hidden (never detached — React owns
+  // that node, and removing a node behind React's back makes its unmount pass
+  // throw) and the paperclip is inserted ahead of it. A settings tab then
+  // reads as this plugin at a glance instead of as a second "General". The
+  // glyph is monochrome at rest and only takes the accent while the section is
+  // open — a pure CSS state, driven by the cell's aria-current.
   function installSettingsNavMark() {
-    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return null
     const NS = 'http://www.w3.org/2000/svg'
+    // The shell icons this instance hid, so a teardown can hand them back.
+    const hidden = new Set()
     const build = () => {
       const svg = document.createElementNS(NS, 'svg')
-      svg.setAttribute('viewBox', '0 0 16 16')
-      svg.setAttribute('width', '16')
-      svg.setAttribute('height', '16')
+      // The composer's own numbers, so the mark is literally the same drawing:
+      // the enlarged viewBox holds the rotated ink (19.304 units across) and the
+      // rendered box is the composer button's 17.24px. The nav column is 16px,
+      // and .dfu-nav-mark's negative margin takes back the 0.62px of overhang
+      // per side — the ink stays on the column and the label offset is intact.
+      svg.setAttribute('viewBox', PAPERCLIP_VIEW_BOX)
+      svg.setAttribute('width', String(PAPERCLIP_SIZE))
+      svg.setAttribute('height', String(PAPERCLIP_SIZE))
       svg.setAttribute('fill', 'none')
       svg.setAttribute('aria-hidden', 'true')
       svg.setAttribute('data-dfu-mark', 'settings-nav')
+      svg.setAttribute('data-dfu-rev', NAV_MARK_REV)
       svg.setAttribute('class', 'dfu-nav-mark')
       const path = document.createElementNS(NS, 'path')
-      path.setAttribute('d', NAV_GLYPH_PATH)
+      path.setAttribute('d', PAPERCLIP_PATH)
       path.setAttribute('fill', 'currentColor')
+      path.setAttribute('transform', PAPERCLIP_TRANSFORM)
       svg.appendChild(path)
       return svg
     }
@@ -833,12 +852,29 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         const cell = cells[i]
         const text = cell.textContent
         if (typeof text !== 'string' || text.trim() !== label) continue
-        const fallback = cell.querySelector('svg')
-        // No icon (unexpected shell shape), already ours, or already patched.
-        if (fallback === null || fallback.getAttribute('data-dfu-mark') !== null) continue
-        if (cell.querySelector('[data-dfu-mark]') !== null) continue
+        // Ours, but drawn by an older bundle: drop it so it is redrawn below.
+        let mark = cell.querySelector('[data-dfu-mark]')
+        if (mark !== null && mark.getAttribute('data-dfu-rev') !== NAV_MARK_REV) {
+          mark.remove()
+          mark = null
+        }
+        // Walk direct children only: the shell's icon is a sibling of the label,
+        // so this never reaches into an svg the label itself might carry.
+        let fallback = null
+        for (let j = 0; j < cell.children.length; j += 1) {
+          const child = cell.children[j]
+          if (child.tagName === 'svg' && child.getAttribute('data-dfu-mark') === null) {
+            fallback = child
+            break
+          }
+        }
+        // No shell icon (unexpected shape) or nothing left to upgrade.
+        if (fallback === null) continue
+        // Re-hide on every pass, not only the first: a shell re-render can put a
+        // fresh, visible copy of the gear back beside ours.
         fallback.style.display = 'none'
-        cell.insertBefore(build(), fallback)
+        hidden.add(fallback)
+        if (mark === null) cell.insertBefore(build(), fallback)
       }
     }
     let scheduled = false
@@ -861,6 +897,18 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       subtree: true,
       characterData: true,
     })
+    // Unload path: stop watching, take our glyph out, and unhide the shell's own
+    // icon. Without this a disabled plugin would leave its paperclip in the row
+    // with the gear underneath still suppressed.
+    return () => {
+      observer.disconnect()
+      const marks = document.querySelectorAll('[data-dfu-mark="settings-nav"]')
+      for (let i = 0; i < marks.length; i += 1) marks[i].remove()
+      hidden.forEach((icon) => {
+        icon.style.display = ''
+      })
+      hidden.clear()
+    }
   }
 
   // --- composer placement ---------------------------------------------------
@@ -1061,11 +1109,15 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       }
     }
     insertStyles(CSS)
-    installSettingsNavMark()
+    const teardownNavMark = installSettingsNavMark()
     installComposerLayout()
     if (typeof ctx.effect === 'function') {
       // Disabling or unloading the plugin hands the official button back.
       ctx.effect(() => restoreComposerLayout, 'dfu: composer attach placement')
+      // ...and the settings row its own gear.
+      if (typeof teardownNavMark === 'function') {
+        ctx.effect(() => teardownNavMark, 'dfu: settings nav mark')
+      }
     }
     if (typeof configGet === 'function') {
       configGet()

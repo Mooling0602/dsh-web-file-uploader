@@ -134,8 +134,9 @@ race in-flight writes; no background task is required.
   `0` (or an empty/invalid value) **disables automatic GC** — files are only
   removed when you explicitly click 🗑.
 - **Configure** in **Settings → File uploads** (native DSH settings panel; the
-  tab carries its own paperclip mark, so it never reads as the gear rows other
-  plugins get): the retention field and the *replace the official attach button*
+  tab carries its own paperclip mark - the composer button's own diagonal
+  glyph, at the same scale - so it never reads as the gear rows other plugins
+  get): the retention field and the *replace the official attach button*
   switch share one Save button. The static bundle persists both in
   `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial }`) and merges
   updates field by field, so saving one never clears the other. The environment

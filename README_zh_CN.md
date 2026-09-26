@@ -83,7 +83,7 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 - **默认 TTL**：`7d`（7 天）。
 - **保留期单位**：`1s`（秒）、`1m`（分钟）、`1h`（小时）、`1d`（天）；不带单位的纯数字按**天**（兼容旧行为）。`0`（或空/非法值）**禁用自动 GC** —— 仅在点击 🗑 时显式删除。
-- **配置**：在 **设置 → 文件上传**（DSH 原生设置面板；该选项卡带专属回形针图标，不会和其他插件的齿轮图标混淆）中，保留期输入框与「替代官方附件按钮」开关共用同一个保存按钮。静态 bundle 将两项写入 `~/.dsh/dsh-web-file-uploader.json`（`{ ttl, replaceOfficial }`），且按字段合并更新——保存一项不会清掉另一项。环境变量 `DSH_UPLOAD_TTL`（如 `DSH_UPLOAD_TTL=30m`）作为兜底在默认值之前生效。动态（会话）模式下该设置存于内存，并优先读取 `dsh-web-file-uploader` 设置命名空间。
+- **配置**：在 **设置 → 文件上传**（DSH 原生设置面板；该选项卡带专属回形针图标，与输入框按钮同为斜 45° 的同一枚图标，不会和其他插件的齿轮图标混淆）中，保留期输入框与「替代官方附件按钮」开关共用同一个保存按钮。静态 bundle 将两项写入 `~/.dsh/dsh-web-file-uploader.json`（`{ ttl, replaceOfficial }`），且按字段合并更新——保存一项不会清掉另一项。环境变量 `DSH_UPLOAD_TTL`（如 `DSH_UPLOAD_TTL=30m`）作为兜底在默认值之前生效。动态（会话）模式下该设置存于内存，并优先读取 `dsh-web-file-uploader` 设置命名空间。
 
 ### 附件按钮的位置与「替代官方按钮」
 
