@@ -232,6 +232,9 @@ return {
     harness.handle('upload-abort', (args) => core.abortStream(args))
     harness.handle('remove', (args) => core.remove(args))
     harness.handle('delete', (args) => core.delete(args))
+    // Settings panel: list every indexed upload and delete a selection.
+    harness.handle('list', () => core.list())
+    harness.handle('delete-many', (args) => core.deleteMany(args))
     harness.handle('dfu-config-get', () => getConfig())
     harness.handle('dfu-config-set', (args) => {
       // Partial update: a caller that only knows about one field must not clear

@@ -76,6 +76,9 @@ return {
       delete: (args) => host.call('delete', args),
       configGet: () => host.call('dfu-config-get'),
       configSet: (cfg) => host.call('dfu-config-set', cfg),
+      // Settings panel: read the upload inventory and delete a selection.
+      filesList: () => host.call('list'),
+      deleteMany: (args) => host.call('delete-many', args),
       insertStyles: (css) => styles.insert(css),
     })
     return core.apply(ctx)

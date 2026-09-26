@@ -174,6 +174,17 @@ function createHostCore(deps) {
     return false
   }
 
+  // Which live sessions still hold this path? The settings UI shows the count
+  // and tells the user to clear it from the conversation's own file card.
+  function pendingHolders(absPath) {
+    const holders = []
+    if (!absPath) return holders
+    for (const [sessionId, row] of pending.entries()) {
+      if (row && row.some((e) => e.abs === absPath)) holders.push(sessionId)
+    }
+    return holders
+  }
+
   function dropPendingRef(sessionId, absPath) {
     const row = pending.get(sessionId)
     if (row) {
@@ -521,6 +532,117 @@ function createHostCore(deps) {
     }
   }
 
+  // --- listing (settings: manage uploaded files) ---------------------------------
+  // Every root this host can write to is listed, because the dedup index is
+  // per-root, not global: the same basename can exist under two workspaces.
+
+  async function listFiles() {
+    const ttl = ttlMs()
+    const now = Date.now()
+    const out = []
+    let roots = []
+    try {
+      if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
+    } catch {
+      roots = []
+    }
+    for (const r of roots) {
+      const base = String(r || '')
+      if (!base) continue
+      const uploadsDir = base + '/uploads'
+      const index = await loadIndex(uploadsDir)
+      for (const hash of Object.keys(index)) {
+        const entry = index[hash]
+        const path = entry.path
+        if (typeof path !== 'string' || path === '') continue
+        let size = 0
+        let exists = false
+        try {
+          const info = await deps.statPath(path)
+          if (info) {
+            exists = true
+            size = Number(info.size) || 0
+          }
+        } catch {
+          exists = true // stay conservative on stat errors, like the GC does
+        }
+        const holders = pendingHolders(path)
+        const name = path.slice(path.lastIndexOf('/') + 1)
+        out.push({
+          hash,
+          path,
+          name,
+          size,
+          at: entry.at > 0 ? entry.at : 0,
+          exists,
+          inUse: holders.length > 0,
+          sessions: holders,
+          // Past retention but still referenced: the automatic sweep will not
+          // touch it, so the UI can point that out instead of looking stuck.
+          overdue: !!(ttl > 0 && entry.at > 0 && now - entry.at > ttl),
+        })
+      }
+    }
+    // Newest first; unknown timestamps sink to the bottom.
+    out.sort((a, b) => b.at - a.at)
+    return { ok: true, files: out, ttl: ttl > 0 ? ttl : 0, now }
+  }
+
+  // --- permanent delete of a selection (settings) --------------------------------
+  // Same safety rules as the single-file delete: a path another live session
+  // still references is never physically removed.
+
+  async function deleteMany(args) {
+    const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : ''
+    const paths = Array.isArray(args && args.paths) ? args.paths : []
+    const results = []
+    let removed = 0
+    let skipped = 0
+    let failed = 0
+    for (const raw of paths) {
+      const path = typeof raw === 'string' ? raw : ''
+      if (!path) continue
+      if (pendingRefs(path)) {
+        skipped += 1
+        results.push({ path, ok: false, removed: false, reason: 'in-use' })
+        continue
+      }
+      try {
+        const res = await deps.deleteFile(path)
+        const resErr = String(res && res.error ? res.error : '')
+        if (!res || !res.ok) {
+          // A missing file is already deleted (both seams behave idempotently).
+          if (/ENOENT|no such file/i.test(resErr)) {
+            await scrubIndexForPath(path)
+            removed += 1
+            results.push({ path, ok: true, removed: true })
+            continue
+          }
+          failed += 1
+          results.push({ path, ok: false, removed: false, error: resErr || 'delete failed' })
+          continue
+        }
+        await scrubIndexForPath(path)
+        removed += 1
+        results.push({ path, ok: true, removed: true })
+      } catch (err) {
+        failed += 1
+        results.push({ path, ok: false, removed: false, error: String((err && err.message) || err) })
+      }
+    }
+    // The selection may have come from any session; drop this session's refs for
+    // whatever actually disappeared, so its own cards do not linger. Paths that
+    // were skipped are deliberately left alone: dropping their ref would release
+    // the very guard that protected them.
+    if (sessionId) {
+      for (const row of results) {
+        if (row.ok && row.removed) dropPendingRef(sessionId, row.path)
+      }
+    }
+    probe('DELETE-MANY n=' + paths.length + ' removed=' + removed + ' skipped=' + skipped + ' failed=' + failed)
+    return { ok: failed === 0, removed, skipped, failed, results }
+  }
+
   // --- garbage collection (lazy TTL sweep) ---------------------------------------
 
   async function gcForRoot(uploadsBase) {
@@ -683,6 +805,10 @@ function createHostCore(deps) {
     abortStream,
     remove,
     delete: (args) => enqueue(() => deleteFile(args)),
+    // Listing only reads; deleting goes through the queue so it cannot race an
+    // in-flight upload that is rewriting the shared index.
+    list: () => listFiles(),
+    deleteMany: (args) => enqueue(() => deleteMany(args)),
     collect: () => enqueue(() => gcForRoots()),
     preStep,
   }
@@ -918,6 +1044,9 @@ return {
     harness.handle('upload-abort', (args) => core.abortStream(args))
     harness.handle('remove', (args) => core.remove(args))
     harness.handle('delete', (args) => core.delete(args))
+    // Settings panel: list every indexed upload and delete a selection.
+    harness.handle('list', () => core.list())
+    harness.handle('delete-many', (args) => core.deleteMany(args))
     harness.handle('dfu-config-get', () => getConfig())
     harness.handle('dfu-config-set', (args) => {
       // Partial update: a caller that only knows about one field must not clear

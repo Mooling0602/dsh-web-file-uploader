@@ -131,6 +131,19 @@ export function apply(ctx) {
       })
       return res.json()
     },
+    // Settings panel: read the upload inventory and delete a selection.
+    filesList: async () => {
+      const res = await fetch('/dsh-web-file-uploader/files')
+      return res.json()
+    },
+    deleteMany: async (args) => {
+      const res = await fetch('/dsh-web-file-uploader/delete-many', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: args && args.sessionId, paths: (args && args.paths) || [] }),
+      })
+      return res.json()
+    },
     insertStyles: (css) => ensureStyles(css),
   })
   return core.apply(ctx)

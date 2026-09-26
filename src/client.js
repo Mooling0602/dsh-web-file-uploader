@@ -26,6 +26,8 @@ function createClientCore(deps) {
   const del = deps.delete
   const configGet = deps.configGet
   const configSet = deps.configSet
+  const filesList = deps.filesList
+  const deleteMany = deps.deleteMany
   const insertStyles = deps.insertStyles || (() => {})
 
   // Composer mark: the shell's own 16px paperclip outline
@@ -86,6 +88,28 @@ function createClientCore(deps) {
       cancelBody: '这个文件还在上传中。取消会立刻中断传输，并丢弃已经发送的部分；返回则继续上传，文件照常保存。',
       cancelConfirm: '确认取消上传',
       cancelKeep: '返回继续上传',
+      manageTitle: '管理已上传的文件',
+      manageHint: '这里列出本插件登记过的文件，可多选后永久删除。删除后模型将无法再读取这些路径。',
+      manageEmpty: '还没有已上传的文件。',
+      manageLoading: '正在读取…',
+      manageFailed: '读取失败',
+      manageUnreachable: '无法连接到宿主，请刷新页面后重试。',
+      manageSelectAll: '全选',
+      manageSelected: '已选 {n} 项',
+      manageTotal: '{n} 个文件 · {size}',
+      manageInUse: '使用中',
+      manageInUseHint: '正在被会话引用，请在对话页面的文件卡片上删除。',
+      manageOverdue: '已过期待清理',
+      manageMissing: '文件已丢失',
+      manageDelete: '删除所选',
+      manageConfirmTitle: '删除所选文件？',
+      manageConfirmBody: '将永久删除以下 {n} 个文件，无法找回；对话中引用过它们的路径也会失效。',
+      manageConfirmOk: '确认删除',
+      manageConfirmCancel: '取消',
+      manageDone: '已删除 {n} 个文件',
+      managePartial: '已删除 {n} 个，跳过 {m} 个被引用的',
+      manageDeleteFailed: '删除失败',
+      refresh: '刷新',
     },
     en: {
       attachTitle: 'Attach files',
@@ -108,11 +132,45 @@ function createClientCore(deps) {
       cancelBody: 'This file is still uploading. Cancelling stops the transfer now and throws away what has been sent; going back keeps uploading and saves the file as usual.',
       cancelConfirm: 'Cancel upload',
       cancelKeep: 'Keep uploading',
+      manageTitle: 'Manage uploaded files',
+      manageHint: 'Files this plugin has recorded. Select any number and delete them permanently; the model can no longer read those paths afterwards.',
+      manageEmpty: 'No uploaded files yet.',
+      manageLoading: 'Loading…',
+      manageFailed: 'Could not load',
+      manageUnreachable: 'Cannot reach the host. Refresh the page and try again.',
+      manageSelectAll: 'Select all',
+      manageSelected: '{n} selected',
+      manageTotal: '{n} files · {size}',
+      manageInUse: 'In use',
+      manageInUseHint: 'Referenced by a session; delete it from the file card in the conversation instead.',
+      manageOverdue: 'Past retention',
+      manageMissing: 'Missing on disk',
+      manageDelete: 'Delete selected',
+      manageConfirmTitle: 'Delete the selected files?',
+      manageConfirmBody: 'This permanently deletes {n} files and cannot be undone; paths referenced in the conversation stop resolving.',
+      manageConfirmOk: 'Delete',
+      manageConfirmCancel: 'Cancel',
+      manageDone: 'Deleted {n} files',
+      managePartial: 'Deleted {n}, skipped {m} still referenced',
+      manageDeleteFailed: 'Delete failed',
+      refresh: 'Refresh',
     },
   }
 
   let tFn = (key) => key
   let localeSvc = null
+
+  // Interpolate {name} placeholders in a localized string. The locale service's
+  // bind() is only a key lookup, so substitution is ours; a missing argument
+  // leaves the placeholder alone rather than printing "undefined".
+  function tf(key, vars) {
+    let out = tFn(key)
+    if (typeof out !== 'string' || !vars) return out
+    Object.keys(vars).forEach((k) => {
+      out = out.split('{' + k + '}').join(String(vars[k]))
+    })
+    return out
+  }
 
   // --- per-session upload store ---------------------------------------------
 
@@ -716,6 +774,58 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
    centred on the column and leaves every sibling row's label offset unchanged. */
 .dfu-nav-mark { flex: none; margin: calc((16px - 17.24px) / 2); }
 nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek-450, #5686fe); }
+
+/* Manage-files panel. Rows are labels so the whole row toggles the checkbox;
+   the list scrolls on its own because the settings column already scrolls. */
+.dfu-manage-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.dfu-manage-empty { font-size: 13px; color: var(--dsw-alias-label-secondary, #8a8f98); padding: 8px 0; }
+.dfu-manage-error { color: var(--dsw-alias-state-error-primary, #ef4444); }
+.dfu-manage-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 6px; }
+.dfu-manage-all { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.dfu-manage-count { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); }
+.dfu-manage-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(128, 128, 128, .22));
+  border-radius: var(--dsw-radius-md, 8px);
+}
+.dfu-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--dsw-alias-border-secondary, rgba(128, 128, 128, .14));
+}
+.dfu-manage-row:last-child { border-bottom: none; }
+.dfu-manage-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, .08)); }
+.dfu-manage-row-locked { cursor: default; opacity: .72; }
+.dfu-manage-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.dfu-manage-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dfu-manage-meta { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); }
+.dfu-manage-badges { display: inline-flex; gap: 6px; flex: none; }
+.dfu-manage-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3, rgba(128, 128, 128, .16));
+  color: var(--dsw-alias-label-secondary, #8a8f98);
+}
+.dfu-manage-badge-use { color: var(--dsw-alias-brand-primary, #4d6bfe); }
+.dfu-manage-delete { margin-left: auto; }
+.dfu-manage-refresh {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: var(--dsw-radius-md, 8px);
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(128, 128, 128, .28));
+  background: transparent;
+  color: var(--dsw-alias-label-primary, inherit);
+  cursor: pointer;
+}
+.dfu-manage-refresh:disabled { opacity: .6; cursor: default; }
+.dfu-manage-status { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); margin-top: 6px; }
+.dfu-settings-divider { height: 1px; background: var(--dsw-alias-border-secondary, rgba(128, 128, 128, .2)); margin: 14px 0; }
 `
 
   // --- settings panel ------------------------------------------------------
@@ -759,6 +869,8 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     return react.createElement(
       'div',
       { className: 'dfu-settings' },
+      react.createElement(ManagePanel, {}),
+      react.createElement('div', { className: 'dfu-settings-divider' }),
       react.createElement(
         'div',
         { className: 'dfu-settings-toggle' },
@@ -804,6 +916,232 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         status === 'error' ? react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-error' }, tFn('failed')) : null,
       ),
     )
+  }
+
+  // --- settings: manage uploaded files -------------------------------------
+
+  // Lists every file the plugin recorded in the per-root dedup index and lets
+  // the user delete a selection permanently. Two safety rules are mirrored
+  // straight from the host core rather than re-implemented here:
+  //   - a file still referenced by a live session is listed but not selectable,
+  //     and the row says to clear it from the conversation's own file card;
+  //   - a file that has vanished from disk is reported, never silently dropped.
+  // The list is read on mount, after each delete, and on demand; nothing polls,
+  // because the panel is only open while the user is looking at it.
+  function ManagePanel() {
+    const [rows, setRows] = react.useState(null) // null = not loaded yet
+    const [error, setError] = react.useState('')
+    const [checked, setChecked] = react.useState({})
+    const [busy, setBusy] = react.useState(false)
+    const [asking, setAsking] = react.useState(false)
+    const [status, setStatus] = react.useState('')
+
+    const load = () => {
+      if (typeof filesList !== 'function') {
+        setError(tFn('manageUnreachable'))
+        setRows([])
+        return
+      }
+      setError('')
+      filesList()
+        .then((r) => {
+          if (!r || r.ok === false) {
+            setError((r && r.error) || tFn('manageFailed'))
+            setRows([])
+            return
+          }
+          const next = Array.isArray(r.files) ? r.files : []
+          setRows(next)
+          // Drop selections that are gone (a file may have been deleted from the
+          // conversation while this panel stayed open).
+          const live = {}
+          next.forEach((f) => { live[f.path] = true })
+          setChecked((prev) => {
+            const kept = {}
+            Object.keys(prev).forEach((k) => { if (prev[k] && live[k]) kept[k] = true })
+            return kept
+          })
+        })
+        .catch(() => {
+          setError(tFn('manageUnreachable'))
+          setRows([])
+        })
+    }
+    react.useEffect(() => {
+      load()
+    }, [])
+
+    const items = rows || []
+    const selectable = items.filter((f) => !f.inUse && f.exists)
+    const selectedPaths = Object.keys(checked).filter((k) => checked[k])
+    const selectedSet = {}
+    selectedPaths.forEach((p) => { selectedSet[p] = true })
+    const selectedRows = items.filter((f) => selectedSet[f.path])
+    const selectedBytes = selectedRows.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
+    const allSelected = selectable.length > 0 && selectable.every((f) => selectedSet[f.path])
+    const totalBytes = items.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
+
+    const toggle = (path) => {
+      setStatus('')
+      setChecked((prev) => {
+        const next = Object.assign({}, prev)
+        if (next[path]) delete next[path]
+        else next[path] = true
+        return next
+      })
+    }
+    const toggleAll = () => {
+      if (allSelected) {
+        setChecked({})
+        return
+      }
+      const next = {}
+      selectable.forEach((f) => { next[f.path] = true })
+      setChecked(next)
+    }
+    const runDelete = () => {
+      if (typeof deleteMany !== 'function' || selectedPaths.length === 0) return
+      setBusy(true)
+      setAsking(false)
+      setStatus('')
+      deleteMany({ paths: selectedPaths })
+        .then((r) => {
+          const n = r && typeof r.removed === 'number' ? r.removed : 0
+          const skipped = r && typeof r.skipped === 'number' ? r.skipped : 0
+          const failed = r && typeof r.failed === 'number' ? r.failed : 0
+          if (failed > 0 && r && r.error) setStatus(String(r.error))
+          else if (skipped > 0) setStatus(tf('managePartial', { n, m: skipped }))
+          else setStatus(tf('manageDone', { n }))
+          setChecked({})
+          setBusy(false)
+          load()
+        })
+        .catch(() => {
+          setStatus(tFn('manageDeleteFailed'))
+          setBusy(false)
+        })
+    }
+
+    const children = []
+    children.push(react.createElement('div', { className: 'dfu-manage-title' }, tFn('manageTitle')))
+    children.push(react.createElement('div', { className: 'dfu-settings-hint' }, tFn('manageHint')))
+
+    if (rows === null) {
+      children.push(react.createElement('div', { className: 'dfu-manage-empty' }, tFn('manageLoading')))
+    } else if (error) {
+      children.push(react.createElement('div', { className: 'dfu-manage-empty dfu-manage-error' }, error))
+    } else if (items.length === 0) {
+      children.push(react.createElement('div', { className: 'dfu-manage-empty' }, tFn('manageEmpty')))
+    } else {
+      children.push(
+        react.createElement(
+          'div',
+          { className: 'dfu-manage-bar' },
+          react.createElement(
+            'label',
+            { className: 'dfu-manage-all' },
+            react.createElement('input', {
+              type: 'checkbox',
+              checked: allSelected,
+              disabled: selectable.length === 0,
+              onChange: toggleAll,
+            }),
+            react.createElement('span', null, tFn('manageSelectAll')),
+          ),
+          react.createElement('span', { className: 'dfu-manage-count' }, tf('manageTotal', { n: items.length, size: formatSize(totalBytes) })),
+        ),
+      )
+
+      const list = items.map((f) => {
+        // A referenced file, or one whose bytes are already gone, is shown but
+        // never selectable: the first is the host's cross-session guard, the
+        // second has nothing left to delete.
+        const locked = f.inUse || !f.exists
+        const badges = []
+        if (f.inUse) {
+          badges.push(react.createElement('span', { key: 'use', className: 'dfu-manage-badge dfu-manage-badge-use', title: tFn('manageInUseHint') }, tFn('manageInUse')))
+        }
+        if (!f.exists) {
+          badges.push(react.createElement('span', { key: 'gone', className: 'dfu-manage-badge' }, tFn('manageMissing')))
+        } else if (f.overdue) {
+          badges.push(react.createElement('span', { key: 'over', className: 'dfu-manage-badge' }, tFn('manageOverdue')))
+        }
+        const meta = [formatSize(f.size)]
+        if (f.at > 0) meta.push(new Date(f.at).toLocaleString())
+        return react.createElement(
+          'label',
+          { key: f.path, className: 'dfu-manage-row' + (locked ? ' dfu-manage-row-locked' : '') },
+          react.createElement('input', {
+            type: 'checkbox',
+            checked: selectedSet[f.path] === true,
+            disabled: locked || busy,
+            title: locked ? tFn('manageInUseHint') : f.path,
+            onChange: () => toggle(f.path),
+          }),
+          react.createElement(
+            'span',
+            { className: 'dfu-manage-body' },
+            react.createElement('span', { className: 'dfu-manage-name', title: f.path }, f.name),
+            react.createElement('span', { className: 'dfu-manage-meta' }, meta.join(' · ')),
+          ),
+          badges.length ? react.createElement('span', { className: 'dfu-manage-badges' }, badges) : null,
+        )
+      })
+      children.push(react.createElement('div', { className: 'dfu-manage-list' }, list))
+
+      const actions = []
+      if (selectedPaths.length > 0) {
+        actions.push(react.createElement('span', { key: 'n', className: 'dfu-manage-count' }, tf('manageSelected', { n: selectedPaths.length })))
+      }
+      actions.push(
+        react.createElement(
+          'button',
+          {
+            key: 'del',
+            type: 'button',
+            className: 'dfu-settings-save dfu-manage-delete',
+            disabled: busy || selectedPaths.length === 0,
+            onClick: () => setAsking(true),
+          },
+          tFn('manageDelete'),
+        ),
+      )
+      actions.push(
+        react.createElement(
+          'button',
+          { key: 'r', type: 'button', className: 'dfu-manage-refresh', disabled: busy, onClick: load },
+          tFn('refresh'),
+        ),
+      )
+      children.push(react.createElement('div', { className: 'dfu-settings-actions' }, actions))
+      if (status) children.push(react.createElement('div', { className: 'dfu-manage-status' }, status))
+    }
+
+    // Confirmation dialog: a permanent multi-file delete deserves an explicit
+    // stop, so the count and the total size are spelled out first.
+    if (asking) {
+      children.push(
+        react.createElement(
+          'div',
+          { className: 'dfu-modal-backdrop', onClick: () => setAsking(false) },
+          react.createElement(
+            'div',
+            { className: 'dfu-modal', onClick: (e) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation() } },
+            react.createElement('div', { className: 'dfu-modal-title' }, tFn('manageConfirmTitle')),
+            react.createElement('div', { className: 'dfu-modal-body' }, tf('manageConfirmBody', { n: selectedPaths.length })),
+            react.createElement('div', { className: 'dfu-modal-file' }, selectedPaths.length + ' · ' + formatSize(selectedBytes)),
+            react.createElement(
+              'div',
+              { className: 'dfu-modal-actions' },
+              react.createElement('button', { type: 'button', className: 'dfu-modal-cancel', onClick: () => setAsking(false) }, tFn('manageConfirmCancel')),
+              react.createElement('button', { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: runDelete }, tFn('manageConfirmOk')),
+            ),
+          ),
+        ),
+      )
+    }
+
+    return react.createElement('div', { className: 'dfu-settings dfu-manage' }, children)
   }
 
   // --- settings nav mark ----------------------------------------------------
@@ -1223,6 +1561,9 @@ return {
       delete: (args) => host.call('delete', args),
       configGet: () => host.call('dfu-config-get'),
       configSet: (cfg) => host.call('dfu-config-set', cfg),
+      // Settings panel: read the upload inventory and delete a selection.
+      filesList: () => host.call('list'),
+      deleteMany: (args) => host.call('delete-many', args),
       insertStyles: (css) => styles.insert(css),
     })
     return core.apply(ctx)
