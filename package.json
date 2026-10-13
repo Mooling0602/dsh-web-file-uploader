@@ -38,11 +38,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:dynamic": "node scripts/build-dynamic.mjs",
     "build:client": "node scripts/build-client.mjs",
-    "build": "node scripts/build-dynamic.mjs && node scripts/build-client.mjs",
+    "build": "node scripts/build-client.mjs",
     "test": "node test/host-core.test.mjs && node test/settings-panel.test.mjs",
-    "prepublishOnly": "node scripts/build-dynamic.mjs && node scripts/build-client.mjs"
+    "prepublishOnly": "node scripts/build-client.mjs"
   },
   "engines": {
     "node": ">=20"

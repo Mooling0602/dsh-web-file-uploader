@@ -1,20 +1,13 @@
 // dsh-web-file-uploader — canonical HOST core (transport-agnostic)
 //
-// Single source of truth for the host logic, consumed by BOTH:
-//   - the static bundle (lib/index.js) via `import`,
-//   - the dynamic plugin (src/host.js) via inlining (scripts/build-dynamic.mjs).
+// Single source of truth for the host logic, consumed by the static bundle
+// (lib/index.js) via `import`.
 //
 // All environment interactions are injected through `deps`:
 //   uploadsRoot(sessionId) -> Promise<string>          base dir for uploads
-//   hashBase64(base64, signal?) -> Promise<string|null> SHA-256 of decoded bytes
-//   saveUploadFile(base64, absPath) -> Promise<{ ok: boolean; error?: string }>
 //   ensureDir(absDir) -> Promise<void>                  create the upload dir
 //   hashFile(absPath) -> Promise<string|null>           SHA-256 of a file on disk
 //   moveFile(from, to) -> Promise<{ ok: boolean; error?: string }>  publish a staged file
-//   appendUploadChunk(absPath, base64) -> Promise<{ ok: boolean; error?: string }>
-//                                                       append one decoded chunk (dynamic intake)
-//   resolvePath(absPath) -> Promise<unknown>            opaque fs handle
-//   processPath(handle) -> string                       absolute path for a handle
 //   statPath(absPath) -> Promise<{ size?: number } | null>
 //   readBytes(absPath, maxBytes, signal?) -> Promise<Uint8Array | null>
 //   readTextFile(absPath) -> Promise<string | null>
@@ -28,11 +21,9 @@
 //   probe(line) -> void                                  diagnostics (no-op in release)
 //   log(...args) -> void
 //
-// Returns { upload, beginStream, appendStream, commitStream, abortStream, remove,
-//           delete, collect, preStep }:
-//   upload(args)   -> { ok, name, path, size, dedup? } | { ok:false, error }
+// Returns { beginStream, commitStream, abortStream, remove, delete, collect,
+//           preStep }:
 //   beginStream(args)  -> { ok, id, tempPath }               staged streaming intake
-//   appendStream(args) -> { ok, received }                   append one decoded chunk
 //   commitStream(args) -> { ok, name, path, size, dedup? }    publish the staged file
 //   abortStream(args)  -> { ok }                              drop the staged file
 //   remove(args)   -> { ok }                                 (un-inject only, keep file)
@@ -40,14 +31,13 @@
 //   collect()      -> runs a lazy TTL sweep over every upload root
 //   preStep(payload, next) -> the (possibly replaced) pre-step decision
 //
-// NOTE: this file must stay free of `import`/`require` and of any sandbox-only
-// builtin — the dynamic build inlines it verbatim into the sandbox function
-// body. Only `export function createHostCore` is used by the static side.
+// NOTE: transport-agnostic by construction — no imports and no I/O of its own;
+// every environment interaction arrives through `deps`. The only export is
+// `createHostCore`, consumed by the static host seam.
 
 export function createHostCore(deps) {
   const pending = new Map()
   const PENDING_CAP = 100
-  const MAX_BASE64_LENGTH = 64 * 1024 * 1024
   const MODALITY_TTL = 10 * 60 * 1000
   const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -101,12 +91,6 @@ export function createHostCore(deps) {
     const n = String(raw || '').replace(/[\/\\\0]/g, '_').trim()
     if (!n || n === '.' || n === '..' || n.length > 255) return null
     return n
-  }
-
-  const base64Size = (b64) => {
-    const clean = b64.replace(/\s+/g, '')
-    const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
-    return Math.floor((clean.length * 3) / 4) - padding
   }
 
   const indexPath = (uploadsDir) => uploadsDir + '/.dfu-index.json'
@@ -249,48 +233,11 @@ export function createHostCore(deps) {
     return { ok: true, name, path: abs, size, dedup: false }
   }
 
-  // --- upload (encoded fallback) ---------------------------------------------
-  // Base64 in one call: the shape the dynamic RPC keeps for small files and for
-  // any transport without a streaming body. Streaming intake below bypasses the
-  // MAX_BASE64_LENGTH ceiling this path needs.
-
-  async function upload(args) {
-    try {
-      const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
-      const name = sanitizeName(args && args.name)
-      const mime = args && typeof args.mime === 'string' ? args.mime : ''
-      const base64 = args && typeof args.base64 === 'string' ? args.base64 : ''
-      if (!name) return { ok: false, error: 'invalid file name' }
-      if (!base64) return { ok: false, error: 'empty content' }
-      if (base64.length > MAX_BASE64_LENGTH) return { ok: false, error: 'file exceeds the ~48 MiB cap' }
-      if (!/^[A-Za-z0-9+/=\s]+$/.test(base64)) return { ok: false, error: 'invalid base64 payload' }
-
-      const uploadsBase = await deps.uploadsRoot(sessionId)
-      const uploadsDir = uploadsBase + '/uploads'
-      const size = base64Size(base64)
-
-      // 1) Content hash (decoded bytes), then reuse identical content.
-      const hash = await deps.hashBase64(base64)
-      const reused = await reuseExisting(sessionId, name, mime, hash, size, uploadsDir)
-      if (reused) return reused
-
-      // 2) Allocate a non-colliding name and write the new copy.
-      const abs = await allocateTarget(uploadsDir, name)
-      if (!abs) return { ok: false, error: 'could not allocate a file name' }
-      const written = await deps.saveUploadFile(base64, abs)
-      if (!written.ok) return { ok: false, error: written.error || 'save failed' }
-
-      return await publish(sessionId, name, mime, hash, size, uploadsDir, uploadsBase, abs)
-    } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) }
-    }
-  }
-
   // --- streaming intake ------------------------------------------------------
-  // The transport moves the bytes — an HTTP request body in the static bundle,
-  // decoded chunks in the dynamic sandbox — while the core owns staging, naming,
-  // dedup, the index and pending bookkeeping. Neither path ever holds the whole
-  // file in memory, so file size is bounded by disk, not by the transport.
+  // The transport moves the bytes — the static bundle streams the HTTP request
+  // body into a staged file — while the core owns staging, naming, dedup, the
+  // index and pending bookkeeping. Neither path ever holds the whole file in
+  // memory, so file size is bounded by disk, not by the transport.
 
   const staged = new Map()
   const STAGED_TTL_MS = 6 * 60 * 60 * 1000
@@ -337,7 +284,6 @@ export function createHostCore(deps) {
         name: name,
         mime: mime,
         size: Number.isFinite(declared) && declared > 0 ? declared : 0,
-        received: 0,
         uploadsBase: uploadsBase,
         uploadsDir: uploadsDir,
         tempPath: tempPathFor(uploadsDir, id),
@@ -346,24 +292,6 @@ export function createHostCore(deps) {
       staged.set(id, entry)
       probe('STREAM-BEGIN sid=' + sessionId + ' file=' + name)
       return { ok: true, id: id, tempPath: entry.tempPath }
-    } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) }
-    }
-  }
-
-  async function appendStream(args) {
-    try {
-      const id = args && typeof args.id === 'string' ? args.id : ''
-      const base64 = args && typeof args.base64 === 'string' ? args.base64 : ''
-      const entry = staged.get(id)
-      if (!entry) return { ok: false, error: 'unknown upload' }
-      if (!base64) return { ok: false, error: 'empty chunk' }
-      if (typeof deps.appendUploadChunk !== 'function') return { ok: false, error: 'append intake unavailable' }
-      const written = await deps.appendUploadChunk(entry.tempPath, base64)
-      if (!written || !written.ok) return { ok: false, error: (written && written.error) || 'append failed' }
-      entry.received += base64Size(base64)
-      entry.at = Date.now()
-      return { ok: true, received: entry.received }
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) }
     }
@@ -379,12 +307,12 @@ export function createHostCore(deps) {
       let hash = args && typeof args.sha256 === 'string' && /^[0-9a-f]{64}$/.test(args.sha256) ? args.sha256 : null
       if (!hash && typeof deps.hashFile === 'function') hash = await deps.hashFile(entry.tempPath)
 
-      let size = entry.received
+      let size = 0
       try {
         const info = await deps.statPath(entry.tempPath)
         if (info && info.size !== undefined) size = info.size
       } catch {
-        // keep the received-byte count
+        // keep size 0 when the staged file cannot be stat'ed
       }
 
       const reused = await reuseExisting(entry.sessionId, entry.name, entry.mime, hash, size, entry.uploadsDir)
@@ -794,11 +722,9 @@ export function createHostCore(deps) {
   }
 
   return {
-    upload: (args) => enqueue(() => upload(args)),
-    // Staging and chunk appends touch only their own temp file; committing goes
-    // through the queue because it reads and rewrites the shared index.
+    // Staging touches only its own temp file; committing goes through the
+    // queue because it reads and rewrites the shared index.
     beginStream,
-    appendStream,
     commitStream: (args) => enqueue(() => commitStream(args)),
     abortStream,
     remove,

@@ -15,9 +15,8 @@ The following are always written in **English**:
   summary line imperative and under ~72 characters.
 - **Code comments and docstrings** — all comments in `src/core/*`,
   `src/seams/*`, `lib/index.js`, `scripts/*` are English. Comments on the
-  "generated" files (`src/host.js`, `src/client.js`,
-  `client/src/client.js`, `lib/client.js`) say *do not edit*; edit the core or
-  the seam template instead and rebuild.
+  "generated" files (`client/src/client.js`, `lib/client.js`) say *do not
+  edit*; edit the core or the seam template instead and rebuild.
 - **Prompts read by the model** — the injected `[Attached files]` block
   (and any other text the model consumes) is English-only. Models think in
   English; multilingual prompt scaffolding reduces accuracy.
@@ -52,12 +51,12 @@ Everything a **human user sees in the UI** is localized through the app's
 
 - **Single source of truth**: `src/core/host-core.js` and
   `src/core/client-core.js`. Edit these, not the generated files.
-- **Seams**: `src/seams/*.template.js` (dynamic) and `lib/index.js` (static)
-  wire transport / IO / services into the cores.
+- **Seams**: `src/seams/client-static.template.js` (client) and `lib/index.js`
+  (host) wire transport / IO / services into the cores. The plugin ships as a
+  static bundle only — there is no dynamic (session) mode.
 - **Regenerate** after core changes: `pnpm build`
-  (runs `build-dynamic.mjs` + `build-client.mjs`).
-- **Runtime dynamic plugin**: redeploy the regenerated `src/host.js` /
-  `src/client.js` via `cordis_define` + `cordis_run`.
+  (runs `build-client.mjs`, which inlines the core into the client seam and
+  wraps the result into the web module loader factory).
 - **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
   than copying `lib/` by hand. The static host half is a thin seam that imports
   `../src/core/*`, so a partial copy leaves it calling the core revision it

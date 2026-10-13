@@ -1,5 +1,5 @@
 // GENERATED — do not edit. Edit src/core/client-core.js or this template, then
-// run `node scripts/build-dynamic.mjs` to regenerate client/src/client.js.
+// run `node scripts/build-client.mjs` to regenerate client/src/client.js.
 // __CORE__
 
 // Guarded browser style insertion (the web build may provide a cleaner seam).

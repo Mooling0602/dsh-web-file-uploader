@@ -31,9 +31,6 @@ const FILES = [
   'lib/client.js',
   'src/core/client-core.js',
   'src/core/host-core.js',
-  'src/seams/client-dynamic.template.js',
-  'src/seams/client-static.template.js',
-  'src/seams/host-dynamic.template.js',
   'client/src/client.js',
 ]
 

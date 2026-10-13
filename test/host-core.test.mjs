@@ -7,6 +7,11 @@
 // interaction through deps, so this file supplies an in-memory-ish filesystem
 // backed by a throwaway temp dir. Run it after touching src/core/host-core.js.
 //
+// Uploads go through the streaming intake (beginStream → write → commitStream)
+// — the same path the static bundle's HTTP route takes: the transport owns the
+// bytes, the core owns staging, naming, dedup, the index and pending
+// bookkeeping.
+//
 // The safety rule under test: a copy another live session still references is
 // never physically removed, and a *skipped* delete must not release the very
 // reference that protected it. The unconditional-drop shape was written first
@@ -25,11 +30,9 @@ mkdirSync(ROOT + '/uploads', { recursive: true })
 let cfg = { ttl: '7d' }
 const core = createHostCore({
   uploadsRoot: async () => ROOT,
-  hashBase64: async (b64) => createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex'),
   ensureDir: async (d) => mkdirSync(d, { recursive: true }),
   hashFile: async (p) => { try { return createHash('sha256').update(readFileSync(p)).digest('hex') } catch { return null } },
   moveFile: async (from, to) => { try { const fs = await import('node:fs'); fs.renameSync(from, to); return { ok: true } } catch (e) { return { ok: false, error: String(e.message) } } },
-  saveUploadFile: async (b64, abs) => { try { mkdirSync(abs.slice(0, abs.lastIndexOf('/')), { recursive: true }); writeFileSync(abs, Buffer.from(b64, 'base64')); return { ok: true } } catch (e) { return { ok: false, error: String(e.message) } } },
   statPath: async (p) => { try { return existsSync(p) ? { size: statSync(p).size } : null } catch { return null } },
   readBytes: async (p) => readFileSync(p),
   readTextFile: async (p) => { try { return existsSync(p) ? readFileSync(p, 'utf8') : null } catch { return null } },
@@ -44,10 +47,18 @@ const core = createHostCore({
 let pass = 0, fail = 0
 const results = []
 const ok = (name, cond, extra) => { if (cond) { pass++; results.push('PASS  ' + name) } else { fail++; results.push('FAIL  ' + name + (extra ? '  <- ' + extra : '')) } }
-const b64 = (s) => Buffer.from(s).toString('base64')
 const S1 = 'sess-A', S2 = 'sess-B'
 
-const u1 = await core.upload({ sessionId: S1, name: 'alpha.txt', mime: 'text/plain', base64: b64('alpha-content-AAAA') })
+// The static route's intake in miniature: stage, write the bytes, commit with
+// the content hash (the route hashes the body while streaming it to disk).
+const streamUpload = async (c, sessionId, name, mime, content) => {
+  const begun = await c.beginStream({ sessionId, name, mime, size: Buffer.byteLength(content) })
+  if (!begun.ok) return begun
+  writeFileSync(begun.tempPath, content)
+  return c.commitStream({ id: begun.id, sha256: createHash('sha256').update(content).digest('hex') })
+}
+
+const u1 = await streamUpload(core, S1, 'alpha.txt', 'text/plain', 'alpha-content-AAAA')
 ok('upload returns ok', u1.ok === true, JSON.stringify(u1))
 ok('upload file exists on disk', existsSync(u1.path))
 ok('upload is not dedup', u1.dedup === false)
@@ -69,8 +80,8 @@ l = await core.list()
 ok('ref survived the skipped delete', l.files.find((f) => f.path === u1.path).inUse === true)
 
 // second session dedups onto the same path
-const u2 = await core.upload({ sessionId: S1, name: 'beta.txt', mime: 'text/plain', base64: b64('beta-content-BBBB') })
-await core.upload({ sessionId: S2, name: 'beta-copy.txt', mime: 'text/plain', base64: b64('beta-content-BBBB') })
+const u2 = await streamUpload(core, S1, 'beta.txt', 'text/plain', 'beta-content-BBBB')
+await streamUpload(core, S2, 'beta-copy.txt', 'text/plain', 'beta-content-BBBB')
 let l2 = await core.list()
 const betaRow = l2.files.find((f) => f.path === u2.path)
 ok('dedup shares one path across sessions', betaRow && betaRow.sessions.length === 2, JSON.stringify(betaRow && betaRow.sessions))
@@ -95,13 +106,13 @@ ok('index scrubbed of deleted paths', Object.values(idx).every((e) => e.path !==
 d = await core.deleteMany({ sessionId: S2, paths: [u1.path] })
 ok('deleting an already-missing path is idempotent success', d.removed === 1 && d.failed === 0, JSON.stringify(d))
 
-const u3 = await core.upload({ sessionId: S1, name: 'gamma.txt', mime: 'text/plain', base64: b64('gamma-content-CCCC') })
-const u4 = await core.upload({ sessionId: S1, name: 'gamma2.txt', mime: 'text/plain', base64: b64('gamma-content-CCCC') })
+const u3 = await streamUpload(core, S1, 'gamma.txt', 'text/plain', 'gamma-content-CCCC')
+const u4 = await streamUpload(core, S1, 'gamma2.txt', 'text/plain', 'gamma-content-CCCC')
 ok('same content dedups to one path', u3.path === u4.path, u3.path + ' vs ' + u4.path)
 ok('dedup flagged on second upload', u4.dedup === true)
 
 writeFileSync(ROOT + '/uploads/ghost.txt', 'ghost-content')
-const ug = await core.upload({ sessionId: S1, name: 'ghost.txt', mime: 'text/plain', base64: b64('ghost-content') })
+const ug = await streamUpload(core, S1, 'ghost.txt', 'text/plain', 'ghost-content')
 await core.remove({ sessionId: S1, path: ug.path })
 rmSync(ug.path)
 l = await core.list()
@@ -140,11 +151,9 @@ const otherHash = createHash('sha256').update(Buffer.from('other-content')).dige
 writeFileSync(ROOT2 + '/uploads/.dfu-index.json', JSON.stringify({ [otherHash]: { path: ROOT2 + '/uploads/other.txt', at: Date.now() } }))
 const core2 = createHostCore({
   uploadsRoot: async () => ROOT2,
-  hashBase64: async (b64) => createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex'),
   ensureDir: async (d) => mkdirSync(d, { recursive: true }),
   hashFile: async (p) => null,
   moveFile: async () => ({ ok: true }),
-  saveUploadFile: async () => ({ ok: true }),
   statPath: async (p) => { try { return existsSync(p) ? { size: statSync(p).size } : null } catch { return null } },
   readBytes: async (p) => readFileSync(p),
   readTextFile: async (p) => { try { return existsSync(p) ? readFileSync(p, 'utf8') : null } catch { return null } },

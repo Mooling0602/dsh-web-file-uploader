@@ -1,25 +1,51 @@
 #!/usr/bin/env node
 // scripts/build-client.mjs — build the static client module.
 //
+// Two steps, both feeding the static bundle:
+//   1. inline the canonical client core (src/core/client-core.js) into the
+//      static seam (src/seams/client-static.template.js) and write the inlined
+//      source to client/src/client.js — the path the dsh.client scan reads;
+//   2. wrap that source into the web module loader factory and write
+//      lib/client.js — the path package.json#exports["./client"] points at.
+//
 // The web profile loads browser halfs as modules wrapped in
 // `window.__ModuleLoader__.load({ id, factory })` (see the shipped
-// @deepseek-ai/dsh-client-* packages). This script performs the equivalent
-// best-effort wrap: it inlines client/src/client.js into the factory and
-// swaps the source's `let react = null` fallback marker for
-// `let react = require("react")` (resolved by the web module loader).
+// @deepseek-ai/dsh-client-* packages). The wrap below performs the equivalent
+// best-effort: it inlines the source into the factory and swaps the source's
+// `let react = null` fallback marker for `let react = require("react")`
+// (resolved by the web module loader).
 //
 // ⚠️ VERIFY WITH THE WEB TOOLCHAIN before publishing: the shipped bundles are
 // produced by the DSH repo's build (vite + a module map). If the loader's
 // require graph differs, adjust the injected require lines here.
 //
-// Output: lib/client.js
+// Outputs:
+//   client/src/client.js   <- client-static.template + client-core (inlined)
+//   lib/client.js          <- the wrapped loader module
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const src = readFileSync(join(root, 'client', 'src', 'client.js'), 'utf8')
+
+const read = (p) => readFileSync(join(root, p), 'utf8')
+
+// Inline a core: strip `export ` keywords so the factory becomes a plain
+// top-level function usable inside the module body.
+const inlineCore = (coreFile) => read(coreFile).replace(/^export\s+(function|const)\s+/gm, '$1 ').trim()
+
+// --- step 1: inline the core into the static seam ---------------------------
+
+const template = read('src/seams/client-static.template.js')
+const core = inlineCore('src/core/client-core.js')
+const marker = '// __CORE__'
+if (!template.includes(marker)) throw new Error('src/seams/client-static.template.js: missing ' + marker + ' marker')
+const src = template.replace(marker, core) + '\n'
+writeFileSync(join(root, 'client', 'src', 'client.js'), src)
+console.log('generated client/src/client.js')
+
+// --- step 2: wrap it into the loader factory --------------------------------
 
 // The standalone fallback line to swap for the loader's require. The swap
 // must happen in place: hoisting a `require` above the `let` declaration
