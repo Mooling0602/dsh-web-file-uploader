@@ -26,14 +26,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/core",
-    "lib/util.js",
-    "cordis.patch.yml",
-    "src/core",
+    "lib",
     "client/src",
-    "scripts",
+    "cordis.patch.yml",
     "README.md",
     "README_zh_CN.md",
     "LICENSE"
@@ -42,6 +37,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "node test/host.test.ts && node test/settings-panel.test.ts",
+    "prepare": "node scripts/build.mjs",
     "prepublishOnly": "node scripts/build.mjs"
   },
   "engines": {

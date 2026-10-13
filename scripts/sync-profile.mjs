@@ -2,18 +2,18 @@
 // scripts/sync-profile.mjs — copy every shipped file into an installed profile
 // package, then verify the result.
 //
-// Why this exists: lib/index.js is a thin seam that imports ../src/core/*.js,
-// so copying only lib/ leaves the installed host half calling the core revision
-// it replaced — and the mistake stays invisible until runtime, where it reads
-// as "core.beginStream is not a function". The static client half is immune
-// (the build inlines its core), which is exactly what makes the partial copy
-// look successful.
+// The shipped lib/ is self-contained (the compiled host half imports only
+// ./core/*), so a full copy of it plus the client scan target is everything
+// the running plugin loads. Older profiles may still carry the pre-TypeScript
+// layout (src/, scripts/ and the .js cores); those stale copies are removed,
+// because an editor who patches them would see nothing change — the same
+// "loads stale code" failure this script exists to prevent.
 //
 // Usage: node scripts/sync-profile.mjs [target-package-dir]
 //   default target: ~/.dsh/profiles/web/node_modules/dsh-web-file-uploader
 
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,16 +23,19 @@ const target = resolve(
   process.argv[2] ?? join(homedir(), '.dsh', 'profiles', 'web', 'node_modules', 'dsh-web-file-uploader'),
 )
 
-/** Every file package.json#files ships that the running halves can load. */
+/** Every file the running halves can load. */
 const FILES = [
   'package.json',
   'cordis.patch.yml',
   'lib/index.js',
   'lib/client.js',
-  'src/core/client-core.js',
-  'src/core/host-core.js',
+  'lib/core/host.js',
+  'lib/types.js',
   'client/src/client.js',
 ]
+
+/** Layouts this script used to ship; removed from the target when present. */
+const STALE = ['src', 'scripts']
 
 const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
@@ -57,9 +60,9 @@ for (const rel of FILES) {
   console.log(`${same ? 'ok  ' : 'FAIL'} ${rel}`)
 }
 
-// The seam pulls its core in relatively: a fresh lib/index.js over a stale
-// src/core is the exact failure this check exists for, so resolve every
-// relative import inside the target and compare it with this checkout.
+// The host half pulls its core in relatively, so resolve every relative import
+// inside the target and compare it with this checkout — a partial copy would
+// otherwise only surface at runtime, as a missing method on the core.
 for (const match of readFileSync(join(target, 'lib', 'index.js'), 'utf8').matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
   const spec = match[1]
   const installed = resolve(join(target, 'lib'), spec)
@@ -67,6 +70,13 @@ for (const match of readFileSync(join(target, 'lib', 'index.js'), 'utf8').matchA
   const ok = existsSync(installed) && existsSync(checkout) && sha256(installed) === sha256(checkout)
   if (!ok) failed = true
   console.log(`${ok ? 'ok  ' : 'FAIL'} lib/index.js -> ${spec}`)
+}
+
+for (const rel of STALE) {
+  const stale = join(target, rel)
+  if (!existsSync(stale)) continue
+  rmSync(stale, { recursive: true, force: true })
+  console.log(`ok   removed stale ${rel}/ (no longer shipped)`)
 }
 
 if (failed) {
