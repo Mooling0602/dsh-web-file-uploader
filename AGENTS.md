@@ -55,11 +55,13 @@ Everything a **human user sees in the UI** is localized through the app's
   transport / IO / services into the cores. The plugin ships as a static
   bundle only — there is no dynamic (session) mode.
 - **Toolchain**: TypeScript (`strict`) compiled by `tsc`; `pnpm typecheck`
-  checks sources and tests, `pnpm test` runs both `.ts` suites directly (Node
-  ≥ 22.6 strips the types), `pnpm build` (scripts/build.mjs) compiles the host
-  half into `lib/` and inlines the client core into the web loader factory
-  (`lib/client.js`, plus the unwrapped `client/src/client.js` the dsh.client
-  scan reads).
+  checks sources and tests, `pnpm test` runs the suites — `host.test.ts` and
+  `settings-panel.test.ts` run the TypeScript sources directly (Node ≥ 22.6
+  strips the types), and `bundle.test.mjs` rebuilds and then loads the shipped
+  `lib/client.js` through the web loader contract. `pnpm build`
+  (scripts/build.mjs) compiles the host half into `lib/` and inlines the
+  client core into the web loader factory (`lib/client.js`, plus the
+  unwrapped `client/src/client.js` the dsh.client scan reads).
 - **dsh API types** are a hand-maintained subset in `src/types.ts` — dsh ships
   none and its interfaces carry breaking changes.
 - **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
