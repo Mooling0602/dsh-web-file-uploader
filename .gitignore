@@ -17,7 +17,7 @@ Thumbs.db
 uploads/
 .dsh-vision-toolkit/
 
-# no deps (DI design); avoid empty lockfile noise
+# The lockfile is not tracked: devDependencies resolve from package.json
 pnpm-lock.yaml
 
 # Sandbox-local package caches (read-only HOME workarounds)
