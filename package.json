@@ -28,9 +28,10 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/core",
+    "lib/util.js",
     "cordis.patch.yml",
     "src/core",
-    "src/seams",
     "client/src",
     "scripts",
     "README.md",
@@ -38,10 +39,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:client": "node scripts/build-client.mjs",
-    "build": "node scripts/build-client.mjs",
-    "test": "node test/host-core.test.mjs && node test/settings-panel.test.mjs",
-    "prepublishOnly": "node scripts/build-client.mjs"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "node test/host.test.ts && node test/settings-panel.test.ts",
+    "prepublishOnly": "node scripts/build.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -59,5 +60,9 @@
       "platform": "web",
       "immediately": true
     }
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
   }
 }

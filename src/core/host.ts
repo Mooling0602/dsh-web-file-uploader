@@ -9,13 +9,13 @@
 //   hashFile(absPath) -> Promise<string|null>           SHA-256 of a file on disk
 //   moveFile(from, to) -> Promise<{ ok: boolean; error?: string }>  publish a staged file
 //   statPath(absPath) -> Promise<{ size?: number } | null>
-//   readBytes(absPath, maxBytes, signal?) -> Promise<Uint8Array | null>
+//   readBytes(absPath, maxBytes?, signal?) -> Promise<Uint8Array | null>
 //   readTextFile(absPath) -> Promise<string | null>
 //   writeTextFile(absPath, content) -> Promise<void>
 //   deleteFile(absPath) -> Promise<{ ok: boolean; error?: string }>   PHYSICAL delete
 //   listUploadRoots() -> Promise<string[]>             base dirs whose /uploads to GC
 //   readConfig() -> { ttlDays: number }                TTL config (0 => disabled)
-//   resolveModelInfo(provider, model, signal?) -> Promise<{ inputModalities?: readonly string[] }>
+//   resolveModelInfo(provider, model, signal?) -> Promise<{ inputModalities?: readonly string[] } | null>
 //   attachmentLimits() -> { mediaTypes: string[]; maxImageBytes: number } | null
 //   saveImage({ data, mediaType, name }) -> Promise<unknown>  ImageAttachmentRef
 //   probe(line) -> void                                  diagnostics (no-op in release)
@@ -31,25 +31,193 @@
 //   collect()      -> runs a lazy TTL sweep over every upload root
 //   preStep(payload, next) -> the (possibly replaced) pre-step decision
 //
-// NOTE: transport-agnostic by construction — no imports and no I/O of its own;
-// every environment interaction arrives through `deps`. The only export is
-// `createHostCore`, consumed by the static host seam.
+// NOTE: transport-agnostic by construction — no I/O of its own; every
+// environment interaction arrives through `deps`. The exports are
+// `createHostCore` (consumed by the static host seam) and the error
+// extractors below.
 
-export function createHostCore(deps) {
-  const pending = new Map()
+import type { PreStepDecision, PreStepPayload } from '../types.js'
+
+// Error extractors shared with the static host seam (src/index.ts). They live
+// here rather than in a util module because this file must stay free of
+// runtime imports: the regression suite (test/host.test.ts) runs these .ts
+// sources directly under Node's type stripping, which cannot resolve the .js
+// specifiers tsc emits for real module imports.
+
+/** Message of an unknown thrown value, the way this codebase's catch blocks
+ *  have always extracted it: prefer `.message`, fall back to the value. */
+export const errMsg = (e: unknown): string =>
+  String((e as { message?: string } | null | undefined)?.message || e)
+
+/** Same preference, but keeps the original value when there is no message —
+ *  the shape the `x && x.message ? x.message : x` log call sites expect. */
+export const errText = (e: unknown): unknown =>
+  (e as { message?: string } | null | undefined)?.message || e
+
+/** Error code of an unknown thrown value (e.g. `EXDEV` from `rename`). */
+export const errCode = (e: unknown): string | undefined =>
+  (e as { code?: string } | null | undefined)?.code
+
+/** Environment interactions the host core needs, injected by the seam. */
+export interface HostCoreDeps {
+  uploadsRoot(sessionId?: string): Promise<string>
+  statPath(absPath: string): Promise<{ size?: number } | null>
+  readTextFile(absPath: string): Promise<string | null>
+  writeTextFile(absPath: string, content: string): Promise<void>
+  ensureDir?(absDir: string): Promise<void>
+  hashFile?(absPath: string): Promise<string | null>
+  moveFile?(from: string, to: string): Promise<{ ok: boolean; error?: string }>
+  readBytes?(absPath: string, maxBytes?: number, signal?: AbortSignal): Promise<Uint8Array | null>
+  deleteFile?(absPath: string): Promise<{ ok: boolean; error?: string }>
+  listUploadRoots?(): Promise<string[]>
+  readConfig?(): { ttl?: string; ttlDays?: number } | null
+  resolveModelInfo?(
+    provider: string | undefined,
+    model: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ inputModalities?: readonly string[] } | null>
+  attachmentLimits?(): { mediaTypes: string[]; maxImageBytes: number } | null
+  saveImage?(input: { data: Uint8Array; mediaType: string; name: string }): Promise<unknown>
+  probe?(line: string): void
+  log?(...args: unknown[]): void
+}
+
+/** A session's live reference to an uploaded file (pre-injection bookkeeping). */
+export interface PendingEntry {
+  id: string
+  name: string
+  mime: string
+  size: number
+  abs: string
+}
+
+/** `.dfu-index.json` maps content hash -> { path, at } (at = upload epoch ms). */
+export interface IndexEntry {
+  path: string
+  at: number
+}
+
+/** One row of the settings-panel inventory. */
+export interface UploadRow {
+  hash: string
+  path: string
+  name: string
+  size: number
+  at: number
+  exists: boolean
+  inUse: boolean
+  sessions: string[]
+  overdue: boolean
+}
+
+export interface UploadResult {
+  ok: boolean
+  name?: string
+  path?: string
+  size?: number
+  dedup?: boolean
+  error?: string
+}
+
+export interface DeleteResult {
+  ok: boolean
+  removed?: boolean
+  reason?: string
+  path?: string
+  error?: string
+}
+
+export interface DeleteManyRow {
+  path: string
+  ok: boolean
+  removed: boolean
+  reason?: string
+  error?: string
+}
+
+export interface DeleteManyResult {
+  ok: boolean
+  removed: number
+  skipped: number
+  failed: number
+  results: DeleteManyRow[]
+}
+
+export interface ListResult {
+  ok: boolean
+  files: UploadRow[]
+  ttl: number
+  now: number
+}
+
+/** A file being streamed in: staged on disk, published on commit. */
+export interface StagedEntry {
+  sessionId?: string
+  name: string
+  mime: string
+  size: number
+  uploadsBase: string
+  uploadsDir: string
+  tempPath: string
+  at: number
+}
+
+export interface BeginStreamArgs {
+  sessionId?: string
+  name?: string
+  mime?: string
+  size?: number
+}
+
+export interface BeginStreamResult {
+  ok: boolean
+  id?: string
+  tempPath?: string
+  error?: string
+}
+
+export interface CommitStreamArgs {
+  id: string
+  sha256?: string
+}
+
+export interface PathArgs {
+  sessionId?: string
+  path?: string
+}
+
+export interface DeleteManyArgs {
+  sessionId?: string
+  paths?: unknown[]
+}
+
+export interface HostCore {
+  beginStream(args: BeginStreamArgs): Promise<BeginStreamResult>
+  commitStream(args: CommitStreamArgs): Promise<UploadResult>
+  abortStream(args: { id: string }): Promise<{ ok: boolean }>
+  remove(args: PathArgs): Promise<{ ok: boolean; error?: string }>
+  delete(args: PathArgs): Promise<DeleteResult>
+  list(): Promise<ListResult>
+  deleteMany(args: DeleteManyArgs): Promise<DeleteManyResult>
+  collect(): Promise<void>
+  preStep(payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>
+}
+
+export function createHostCore(deps: HostCoreDeps): HostCore {
+  const pending = new Map<string, PendingEntry[]>()
   const PENDING_CAP = 100
   const MODALITY_TTL = 10 * 60 * 1000
   const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
   // Serialize uploads so the hash check + write + index update never race.
-  let uploadQueue = Promise.resolve()
-  const enqueue = (fn) => {
+  let uploadQueue: Promise<unknown> = Promise.resolve()
+  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
     const p = uploadQueue.then(fn)
     uploadQueue = p.catch(() => {})
     return p
   }
 
-  const log = deps.log || ((...a) => {})
+  const log = deps.log || ((...a: unknown[]) => {})
   const probe = deps.probe || (() => {})
 
   // --- configuration ----------------------------------------------------------
@@ -59,7 +227,7 @@ export function createHostCore(deps) {
   //   "7" (no unit)      -> days (legacy ttlDays semantics)
   //   "30m" "2h" "1d" "45s" -> seconds/minutes/hours/days
   //   any other string   -> 0 (safe: never auto-clean rather than delete early)
-  const parseTtl = (raw) => {
+  const parseTtl = (raw: unknown): number => {
     if (raw === undefined || raw === null) return 0
     const s = String(raw).trim()
     if (s === '' || s === '0') return 0
@@ -71,8 +239,8 @@ export function createHostCore(deps) {
     return n * mult
   }
 
-  const ttlMs = () => {
-    let raw = '7d'
+  const ttlMs = (): number => {
+    let raw: string | number = '7d'
     if (typeof deps.readConfig === 'function') {
       try {
         const cfg = deps.readConfig()
@@ -87,24 +255,24 @@ export function createHostCore(deps) {
     return parseTtl(raw)
   }
 
-  const sanitizeName = (raw) => {
+  const sanitizeName = (raw: unknown): string | null => {
     const n = String(raw || '').replace(/[\/\\\0]/g, '_').trim()
     if (!n || n === '.' || n === '..' || n.length > 255) return null
     return n
   }
 
-  const indexPath = (uploadsDir) => uploadsDir + '/.dfu-index.json'
+  const indexPath = (uploadsDir: string): string => uploadsDir + '/.dfu-index.json'
 
   // .dfu-index.json maps hash -> { path, at } (at = upload epoch ms).
   // Legacy entries (hash -> path string) are migrated in memory to { path, at: 0 };
   // at === 0 means "time unknown" and is never reclaimed by TTL.
-  const loadIndex = async (uploadsDir) => {
+  const loadIndex = async (uploadsDir: string): Promise<Record<string, IndexEntry>> => {
     try {
       const text = await deps.readTextFile(indexPath(uploadsDir))
       if (text === null) return {}
       const parsed = JSON.parse(text)
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-      const out = {}
+      const out: Record<string, IndexEntry> = {}
       for (const k of Object.keys(parsed)) {
         const v = parsed[k]
         if (typeof v === 'string') {
@@ -119,17 +287,17 @@ export function createHostCore(deps) {
     }
   }
 
-  const saveIndex = async (uploadsDir, index) => {
+  const saveIndex = async (uploadsDir: string, index: Record<string, IndexEntry>): Promise<void> => {
     try {
       await deps.writeTextFile(indexPath(uploadsDir), JSON.stringify(index))
     } catch (err) {
-      log('dfu index save failed:', err && err.message ? err.message : err)
+      log('dfu index save failed:', errText(err))
     }
   }
 
   // --- pending bookkeeping -----------------------------------------------------
 
-  function registerPending(sessionId, entry) {
+  function registerPending(sessionId: string | undefined, entry: { name: string; mime: string; size: number; abs: string }): void {
     if (!sessionId) return
     let row = pending.get(sessionId)
     if (!row) {
@@ -148,7 +316,7 @@ export function createHostCore(deps) {
 
   // Does ANY live session still hold a pending reference to this path?
   // Used to protect dedup-shared copies from permanent deletion / TTL sweep.
-  function pendingRefs(absPath) {
+  function pendingRefs(absPath: string): boolean {
     if (!absPath) return false
     for (const row of pending.values()) {
       if (row && row.some((e) => e.abs === absPath)) return true
@@ -158,8 +326,8 @@ export function createHostCore(deps) {
 
   // Which live sessions still hold this path? The settings UI shows the count
   // and tells the user to clear it from the conversation's own file card.
-  function pendingHolders(absPath) {
-    const holders = []
+  function pendingHolders(absPath: string): string[] {
+    const holders: string[] = []
     if (!absPath) return holders
     for (const [sessionId, row] of pending.entries()) {
       if (row && row.some((e) => e.abs === absPath)) holders.push(sessionId)
@@ -167,7 +335,7 @@ export function createHostCore(deps) {
     return holders
   }
 
-  function dropPendingRef(sessionId, absPath) {
+  function dropPendingRef(sessionId: string, absPath: string): void {
     const row = pending.get(sessionId)
     if (row) {
       const i = row.findIndex((e) => e.abs === absPath)
@@ -182,7 +350,14 @@ export function createHostCore(deps) {
 
   // Reuse the stored copy of identical content. Returns the shared result, or
   // null when these bytes still have to be written.
-  async function reuseExisting(sessionId, name, mime, hash, size, uploadsDir) {
+  async function reuseExisting(
+    sessionId: string | undefined,
+    name: string,
+    mime: string,
+    hash: string | null,
+    size: number,
+    uploadsDir: string,
+  ): Promise<UploadResult | null> {
     if (!hash) return null
     try {
       const index = await loadIndex(uploadsDir)
@@ -201,7 +376,7 @@ export function createHostCore(deps) {
   }
 
   // First free name for this upload: `name`, then `stem-1.ext`, `stem-2.ext`, ...
-  async function allocateTarget(uploadsDir, name) {
+  async function allocateTarget(uploadsDir: string, name: string): Promise<string | null> {
     const dot = name.lastIndexOf('.')
     const stem = dot > 0 ? name.slice(0, dot) : name
     const ext = dot > 0 ? name.slice(dot) : ''
@@ -215,7 +390,16 @@ export function createHostCore(deps) {
 
   // Record hash -> { path, at } (future re-uploads reuse this copy), keep the
   // session's pending reference, and kick the lazy TTL sweep.
-  async function publish(sessionId, name, mime, hash, size, uploadsDir, uploadsBase, abs) {
+  async function publish(
+    sessionId: string | undefined,
+    name: string,
+    mime: string,
+    hash: string | null,
+    size: number,
+    uploadsDir: string,
+    uploadsBase: string,
+    abs: string,
+  ): Promise<UploadResult> {
     if (hash) {
       const index = await loadIndex(uploadsDir)
       if (!index[hash]) {
@@ -224,7 +408,7 @@ export function createHostCore(deps) {
       }
     }
     registerPending(sessionId, { name, mime, size, abs })
-    probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId) || []).length)
+    probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId!) || []).length)
     try {
       enqueue(() => gcForRoot(uploadsBase))
     } catch {
@@ -239,13 +423,13 @@ export function createHostCore(deps) {
   // index and pending bookkeeping. Neither path ever holds the whole file in
   // memory, so file size is bounded by disk, not by the transport.
 
-  const staged = new Map()
+  const staged = new Map<string, StagedEntry>()
   const STAGED_TTL_MS = 6 * 60 * 60 * 1000
 
-  const tempPathFor = (uploadsDir, id) => uploadsDir + '/.dfu-tmp-' + id
+  const tempPathFor = (uploadsDir: string, id: string): string => uploadsDir + '/.dfu-tmp-' + id
 
   // Drop a staged file: best effort, never fatal (abort paths and failed moves).
-  async function dropTemp(absPath) {
+  async function dropTemp(absPath: string): Promise<void> {
     if (!absPath || typeof deps.deleteFile !== 'function') return
     try {
       await deps.deleteFile(absPath)
@@ -257,7 +441,7 @@ export function createHostCore(deps) {
 
   // Forget staged uploads nobody finished (a crashed or closed tab leaves both an
   // entry and a partial file behind; the sweep keeps neither forever).
-  function sweepStaged() {
+  function sweepStaged(): void {
     const now = Date.now()
     for (const [id, entry] of staged) {
       if (now - entry.at > STAGED_TTL_MS) {
@@ -267,7 +451,7 @@ export function createHostCore(deps) {
     }
   }
 
-  async function beginStream(args) {
+  async function beginStream(args: BeginStreamArgs): Promise<BeginStreamResult> {
     try {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
       const name = sanitizeName(args && args.name)
@@ -279,7 +463,7 @@ export function createHostCore(deps) {
       const uploadsDir = uploadsBase + '/uploads'
       if (typeof deps.ensureDir === 'function') await deps.ensureDir(uploadsDir)
       const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
-      const entry = {
+      const entry: StagedEntry = {
         sessionId: sessionId,
         name: name,
         mime: mime,
@@ -293,13 +477,13 @@ export function createHostCore(deps) {
       probe('STREAM-BEGIN sid=' + sessionId + ' file=' + name)
       return { ok: true, id: id, tempPath: entry.tempPath }
     } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) }
+      return { ok: false, error: errMsg(err) }
     }
   }
 
   // Publish a staged file: hash it (the transport may already know), reuse an
   // identical copy when one exists, otherwise move it onto its final name.
-  async function commitStream(args) {
+  async function commitStream(args: CommitStreamArgs): Promise<UploadResult> {
     const id = args && typeof args.id === 'string' ? args.id : ''
     const entry = staged.get(id)
     if (!entry) return { ok: false, error: 'unknown upload' }
@@ -345,11 +529,11 @@ export function createHostCore(deps) {
     } catch (err) {
       staged.delete(id)
       await dropTemp(entry.tempPath)
-      return { ok: false, error: String((err && err.message) || err) }
+      return { ok: false, error: errMsg(err) }
     }
   }
 
-  async function abortStream(args) {
+  async function abortStream(args: { id: string }): Promise<{ ok: boolean }> {
     const id = args && typeof args.id === 'string' ? args.id : ''
     const entry = staged.get(id)
     if (!entry) return { ok: true }
@@ -361,16 +545,17 @@ export function createHostCore(deps) {
   // --- remove (× close) ---------------------------------------------------------
   // Keep files on disk: the model may still re-read them from the uploads folder.
 
-  async function remove(args) {
+  async function remove(args: PathArgs): Promise<{ ok: boolean; error?: string }> {
     try {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
       const path = args && typeof args.path === 'string' ? args.path : undefined
       if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
       dropPendingRef(sessionId, path)
-      probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (pending.get(sessionId) ? pending.get(sessionId).length : 0))
+      const row0 = pending.get(sessionId)
+      probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (row0 ? row0.length : 0))
       return { ok: true }
     } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) }
+      return { ok: false, error: errMsg(err) }
     }
   }
 
@@ -378,10 +563,10 @@ export function createHostCore(deps) {
   // Drop the pending ref AND physically delete the file, unless another live
   // session still references the same dedup copy.
 
-  const rootsMatchingPath = async (absPath) => {
-    const matches = []
+  const rootsMatchingPath = async (absPath: string): Promise<string[]> => {
+    const matches: string[] = []
     try {
-      let roots = []
+      let roots: string[] = []
       if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
       for (const r of roots) {
         const base = String(r || '')
@@ -394,7 +579,7 @@ export function createHostCore(deps) {
     return matches
   }
 
-  const scrubIndexForPath = async (absPath) => {
+  const scrubIndexForPath = async (absPath: string): Promise<void> => {
     try {
       const bases = await rootsMatchingPath(absPath)
       for (const base of bases) {
@@ -410,11 +595,11 @@ export function createHostCore(deps) {
         if (changed) await saveIndex(uploadsDir, index)
       }
     } catch (err) {
-      log('dfu index scrub failed:', err && err.message ? err.message : err)
+      log('dfu index scrub failed:', errText(err))
     }
   }
 
-  async function deleteFile(args) {
+  async function deleteFile(args: PathArgs): Promise<DeleteResult> {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
     const path = args && typeof args.path === 'string' ? args.path : undefined
     if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
@@ -454,7 +639,7 @@ export function createHostCore(deps) {
       }
       return { ok: true, removed: true, path }
     } catch (err) {
-      return { ok: false, removed: false, error: String((err && err.message) || err), path }
+      return { ok: false, removed: false, error: errMsg(err), path }
     }
   }
 
@@ -462,11 +647,11 @@ export function createHostCore(deps) {
   // Every root this host can write to is listed, because the dedup index is
   // per-root, not global: the same basename can exist under two workspaces.
 
-  async function listFiles() {
+  async function listFiles(): Promise<ListResult> {
     const ttl = ttlMs()
     const now = Date.now()
-    const out = []
-    let roots = []
+    const out: UploadRow[] = []
+    let roots: string[] = []
     try {
       if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
     } catch {
@@ -518,10 +703,11 @@ export function createHostCore(deps) {
   // Same safety rules as the single-file delete: a path another live session
   // still references is never physically removed.
 
-  async function deleteMany(args) {
+  async function deleteMany(args: DeleteManyArgs): Promise<DeleteManyResult> {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : ''
-    const paths = Array.isArray(args && args.paths) ? args.paths : []
-    const results = []
+    const rawPaths = args && args.paths
+    const paths: unknown[] = Array.isArray(rawPaths) ? rawPaths : []
+    const results: DeleteManyRow[] = []
     let removed = 0
     let skipped = 0
     let failed = 0
@@ -534,7 +720,7 @@ export function createHostCore(deps) {
         continue
       }
       try {
-        const res = await deps.deleteFile(path)
+        const res = await deps.deleteFile!(path)
         const resErr = String(res && res.error ? res.error : '')
         if (!res || !res.ok) {
           // A missing file is already deleted (both seams behave idempotently).
@@ -553,7 +739,7 @@ export function createHostCore(deps) {
         results.push({ path, ok: true, removed: true })
       } catch (err) {
         failed += 1
-        results.push({ path, ok: false, removed: false, error: String((err && err.message) || err) })
+        results.push({ path, ok: false, removed: false, error: errMsg(err) })
       }
     }
     // The selection may have come from any session; drop this session's refs for
@@ -571,7 +757,7 @@ export function createHostCore(deps) {
 
   // --- garbage collection (lazy TTL sweep) ---------------------------------------
 
-  async function gcForRoot(uploadsBase) {
+  async function gcForRoot(uploadsBase: string): Promise<void> {
     const ttl = ttlMs()
     if (!(ttl > 0)) return // automatic GC disabled
     const uploadsDir = uploadsBase + '/uploads'
@@ -612,34 +798,38 @@ export function createHostCore(deps) {
             log('dfu gc delete failed:', path, res && res.error)
           }
         } catch (err) {
-          log('dfu gc delete error:', path, err && err.message ? err.message : err)
+          log('dfu gc delete error:', path, errText(err))
         }
       }
     }
     if (changed) await saveIndex(uploadsDir, index)
   }
 
-  async function gcForRoots() {
+  async function gcForRoots(): Promise<void> {
     try {
-      let roots = []
+      let roots: string[] = []
       if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
       for (const r of roots) {
         try {
           await gcForRoot(r)
         } catch (err) {
-          log('dfu gc sweep failed for root', r, err && err.message ? err.message : err)
+          log('dfu gc sweep failed for root', r, errText(err))
         }
       }
     } catch (err) {
-      log('dfu gc failed:', err && err.message ? err.message : err)
+      log('dfu gc failed:', errText(err))
     }
   }
 
   // --- pre-step injection ---------------------------------------------------
 
-  const modalityCache = new Map()
+  const modalityCache = new Map<string, { at: number; value: boolean }>()
 
-  const supportsImages = async (provider, model, signal) => {
+  const supportsImages = async (
+    provider: string | undefined,
+    model: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
     if (!provider || !model) return false
     const key = provider + '\u0000' + model
     const hit = modalityCache.get(key)
@@ -648,7 +838,8 @@ export function createHostCore(deps) {
     if (deps.resolveModelInfo) {
       try {
         const info = await deps.resolveModelInfo(provider, model, signal)
-        value = Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+        const modalities = info?.inputModalities
+        value = Array.isArray(modalities) && modalities.includes('image')
       } catch {
         value = false
       }
@@ -657,7 +848,7 @@ export function createHostCore(deps) {
     return value
   }
 
-  async function preStep(payload, next) {
+  async function preStep(payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision> {
     const decision = await next()
     try {
       if (!decision || decision.kind !== 'enter') return decision
@@ -667,6 +858,7 @@ export function createHostCore(deps) {
       const row = pending.get(sid)
       const claimed = payload.messages
       if (!row || row.length === 0 || !Array.isArray(claimed) || claimed.length === 0) return decision
+      if (!Array.isArray(decision.messages)) return decision
 
       const target = claimed[claimed.length - 1]
       if (!target || !Array.isArray(target.content)) return decision
@@ -681,12 +873,12 @@ export function createHostCore(deps) {
       const multimodal = await supportsImages(agent.options && agent.options.provider, agent.options && agent.options.model, payload.signal)
 
       const limits = deps.attachmentLimits ? deps.attachmentLimits() : null
-      const blocks = []
-      const paths = []
+      const blocks: Array<{ type: string; attachment?: unknown; text?: string }> = []
+      const paths: string[] = []
 
       for (const entry of row) {
         const isImage = limits !== null && limits.mediaTypes.includes(entry.mime)
-        if (multimodal && isImage && entry.size <= limits.maxImageBytes && deps.saveImage && deps.readBytes) {
+        if (limits !== null && multimodal && isImage && entry.size <= limits.maxImageBytes && deps.saveImage && deps.readBytes) {
           try {
             const bytes = await deps.readBytes(entry.abs, limits.maxImageBytes, payload.signal)
             if (!bytes) throw new Error('read failed')
@@ -716,7 +908,7 @@ export function createHostCore(deps) {
         return { ...decision, messages: newMessages }
       }
     } catch (err) {
-      log('dfu pre-step injection failed:', err && err.message ? err.message : err)
+      log('dfu pre-step injection failed:', errMsg(err))
     }
     return decision
   }

@@ -19,3 +19,6 @@ uploads/
 
 # no deps (DI design); avoid empty lockfile noise
 pnpm-lock.yaml
+
+# Sandbox-local package caches (read-only HOME workarounds)
+.xdg/

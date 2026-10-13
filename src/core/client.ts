@@ -1,7 +1,7 @@
 // dsh-web-file-uploader — canonical CLIENT core (transport-agnostic)
 //
 // Single source of truth for the client UI + upload flow, inlined into the
-// static client module (client/src/client.js) by scripts/build-client.mjs.
+// static client module (client/src/client.js) by scripts/build.mjs.
 //
 // All environment interactions are injected through `deps`:
 //   react              React namespace (injected by the build wrapper)
@@ -21,7 +21,113 @@
 // verbatim into the loader factory. Only `export function createClientCore` is
 // used.
 
-export function createClientCore(deps) {
+import type { PluginContext } from '../types.js'
+
+/** The React surface this core uses — a structural subset. The build wrapper
+ *  injects the real namespace through `require("react")`; the standalone
+ *  (unwrapped) build leaves it null and apply() no-ops. */
+export interface ReactLike {
+  createElement(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown
+  useState<S>(initial: S): [S, (value: S | ((prev: S) => S)) => void]
+  useEffect(fn: () => void | (() => void), deps?: readonly unknown[]): void
+}
+
+/** One upload card in the per-session store. */
+export interface FileCard {
+  id: string
+  name: string
+  size: number
+  mime: string
+  isImage: boolean
+  previewUrl: string | null
+  status: 'uploading' | 'done' | 'error' | 'cancelling'
+  error: string | null
+  path: string | null
+  loaded: number
+  total: number
+  controller: AbortController | null
+  confirmCancel: boolean
+  savedSize?: number
+}
+
+/** Environment interactions the client core needs, injected by the seam. */
+export interface ClientCoreDeps {
+  react: ReactLike
+  upload(args: UploadArgs): Promise<UploadResult>
+  remove(args: PathArgs): Promise<unknown>
+  delete?(args: PathArgs): Promise<unknown>
+  configGet?(): Promise<DfuConfig | null>
+  configSet?(cfg: Partial<DfuConfig>): Promise<(DfuConfig & { ok?: boolean }) | null>
+  filesList?(): Promise<FilesListResult | null>
+  deleteMany?(args: { sessionId?: string; paths: string[] }): Promise<DeleteManyResult | null>
+  insertStyles?(css: string): void
+}
+
+export interface UploadArgs {
+  sessionId?: string
+  name: string
+  mime?: string
+  size?: number
+  file?: File
+  base64?: string
+  signal?: AbortSignal
+  onProgress?: (loaded: number, total: number) => void
+}
+
+export interface UploadResult {
+  ok: boolean
+  name?: string
+  path?: string
+  size?: number
+  dedup?: boolean
+  error?: string
+}
+
+export interface PathArgs {
+  sessionId?: string
+  path: string
+}
+
+export interface DfuConfig {
+  ttl?: string
+  replaceOfficial?: boolean
+}
+
+/** One row of the settings "manage files" inventory (mirrors the host core). */
+export interface ClientFileRow {
+  hash: string
+  path: string
+  name: string
+  size: number
+  at: number
+  exists: boolean
+  inUse: boolean
+  sessions: string[]
+  overdue: boolean
+}
+
+export interface FilesListResult {
+  ok: boolean
+  files?: ClientFileRow[]
+  ttl?: number
+  now?: number
+  error?: string
+}
+
+export interface DeleteManyResult {
+  ok: boolean
+  removed?: number
+  skipped?: number
+  failed?: number
+  results?: unknown[]
+  error?: string
+}
+
+export interface ClientCore {
+  apply(ctx: PluginContext): void
+}
+
+export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const react = deps.react
   const upload = deps.upload
   const remove = deps.remove
@@ -161,13 +267,13 @@ export function createClientCore(deps) {
     },
   }
 
-  let tFn = (key) => key
-  let localeSvc = null
+  let tFn: (key: string) => string = (key) => key
+  let localeSvc: import('../types.js').LocaleService | null = null
 
   // Interpolate {name} placeholders in a localized string. The locale service's
   // bind() is only a key lookup, so substitution is ours; a missing argument
   // leaves the placeholder alone rather than printing "undefined".
-  function tf(key, vars) {
+  function tf(key: string, vars?: Record<string, unknown>): string {
     let out = tFn(key)
     if (typeof out !== 'string' || !vars) return out
     Object.keys(vars).forEach((k) => {
@@ -178,9 +284,17 @@ export function createClientCore(deps) {
 
   // --- per-session upload store ---------------------------------------------
 
-  function createStore() {
-    const bySession = new Map()
-    const listeners = new Set()
+  interface UploadStore {
+    files(sessionId: string | undefined): FileCard[]
+    subscribe(fn: () => void): () => boolean
+    add(sessionId: string | undefined, entry: FileCard): void
+    update(sessionId: string | undefined, id: string, patch: Partial<FileCard>): void
+    remove(sessionId: string | undefined, id: string): void
+  }
+
+  function createStore(): UploadStore {
+    const bySession = new Map<string | undefined, FileCard[]>()
+    const listeners = new Set<() => void>()
     const emit = () => {
       listeners.forEach((fn) => fn())
     }
@@ -220,7 +334,7 @@ export function createClientCore(deps) {
   }
   const store = createStore()
 
-  const formatSize = (bytes) => {
+  const formatSize = (bytes: number): string => {
     if (!Number.isFinite(bytes) || bytes < 0) return ''
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -232,10 +346,11 @@ export function createClientCore(deps) {
   // - dsh 0.1.2-alpha passes an InputZone owner share `{ session: SessionSnapshot,
   //   input }` where the id lives at `session.sessionId` (plus standard hooks).
   // Both shapes are accepted so one build runs on either version.
-  function sessionIdOf(props) {
-    if (props) {
-      if (typeof props.sessionId === 'string' && props.sessionId !== '') return props.sessionId
-      const session = props.session
+  function sessionIdOf(props: unknown): string | undefined {
+    const p = props as { sessionId?: unknown; session?: unknown } | null | undefined
+    if (p) {
+      if (typeof p.sessionId === 'string' && p.sessionId !== '') return p.sessionId
+      const session = p.session as { sessionId?: unknown } | null | undefined
       if (session && typeof session === 'object' && typeof session.sessionId === 'string') {
         return session.sessionId
       }
@@ -247,17 +362,17 @@ export function createClientCore(deps) {
   function useStoreVersion() {
     const [v, setV] = react.useState(0)
     react.useEffect(() => {
-      const unsubs = []
+      const unsubs: Array<(() => void) | undefined> = []
       unsubs.push(store.subscribe(() => setV((x) => x + 1)))
       if (localeSvc !== null && typeof localeSvc.subscribe === 'function') {
         unsubs.push(localeSvc.subscribe(() => setV((x) => x + 1)))
       }
-      return () => unsubs.forEach((fn) => fn())
+      return () => unsubs.forEach((fn) => { if (fn) fn() })
     }, [])
     return v
   }
 
-  const copyPath = (path) => {
+  const copyPath = (path: string) => {
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
         navigator.clipboard.writeText(path).catch(() => {})
@@ -269,7 +384,7 @@ export function createClientCore(deps) {
 
   // Fire-and-forget un-reference: the host keeps the file on disk, this session
   // just stops injecting it.
-  const unref = (sessionId, path) => {
+  const unref = (sessionId: string | undefined, path: string | null | undefined) => {
     if (!path) return
     try {
       remove({ sessionId: sessionId, path: path }).catch(() => {})
@@ -287,7 +402,7 @@ export function createClientCore(deps) {
   // or discard a file the user wanted — the card asks first. "Keep uploading"
   // leaves the card (and its reference) alone, so no orphan copy is left behind
   // either way.
-  const removeCard = (sessionId, id) => {
+  const removeCard = (sessionId: string | undefined, id: string) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
     if (!entry) return
     if (entry.status === 'uploading' && entry.controller) {
@@ -302,19 +417,19 @@ export function createClientCore(deps) {
   // stays in a cancelling state until the transport settles, because losing the
   // race (the host had already published the file) still owes the host an
   // un-reference — see the completion handler in AttachButton.
-  const cancelUpload = (sessionId, id) => {
+  const cancelUpload = (sessionId: string | undefined, id: string) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
     if (!entry) return
     store.update(sessionId, id, { confirmCancel: false, status: 'cancelling' })
     try {
-      entry.controller.abort()
+      if (entry.controller !== null) entry.controller.abort()
     } catch {
       // already settled — the completion handler closes the card
     }
   }
 
   // "Keep uploading": dismiss the question and let the transfer run on.
-  const keepUploading = (sessionId, id) => {
+  const keepUploading = (sessionId: string | undefined, id: string) => {
     store.update(sessionId, id, { confirmCancel: false })
   }
 
@@ -322,7 +437,7 @@ export function createClientCore(deps) {
   // the host (trash can). Falls back to remove (un-inject only) when the host
   // does not expose a `delete` RPC. Cross-session shared copies are protected
   // on the host side (removed:false) — this session's card still goes away.
-  const deleteCard = (sessionId, id) => {
+  const deleteCard = (sessionId: string | undefined, id: string) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
     if (entry && entry.path) {
       try {
@@ -340,13 +455,14 @@ export function createClientCore(deps) {
 
   // --- components -----------------------------------------------------------
 
-  function AttachButton(props) {
+  function AttachButton(props: unknown) {
     useStoreVersion()
     const sessionId = sessionIdOf(props)
-    const onPick = (event) => {
-      const files = Array.prototype.slice.call(event.target.files || [])
-      event.target.value = ''
-      files.forEach((file) => {
+    const onPick = (event: Event) => {
+      const input = event.target as HTMLInputElement
+      const files = Array.from(input.files || [])
+      input.value = ''
+      files.forEach((file: File) => {
         const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
         const isImage = IMAGE_TYPES.includes(file.type)
         let previewUrl = null
@@ -377,7 +493,7 @@ export function createClientCore(deps) {
         // it as the request body, so nothing here reads the whole file into
         // memory. Progress arrives from the transport and only ever updates
         // the card's status line.
-        const onProgress = (loaded, total) => {
+        const onProgress = (loaded: number, total: number) => {
           if (store.files(sessionId).some((x) => x.id === id)) {
             store.update(sessionId, id, { loaded: loaded, total: total || file.size })
           }
@@ -445,12 +561,12 @@ export function createClientCore(deps) {
     )
   }
 
-  function UploadChips(props) {
+  function UploadChips(props: unknown) {
     useStoreVersion()
     const sessionId = sessionIdOf(props)
     const files = store.files(sessionId)
     if (!files.length) return null
-    const chips = []
+    const chips: unknown[] = []
     files.forEach((f) => {
       let preview = null
       if (f.isImage && f.previewUrl) {
@@ -490,12 +606,12 @@ export function createClientCore(deps) {
       } else {
         statusNode = react.createElement('span', { className: 'dfu-chip-status dfu-chip-status-error', title: f.error || '' }, f.error || tFn('failed'))
       }
-      const actions = []
+      const actions: unknown[] = []
       if (f.status === 'done' && f.path) {
         actions.push(
           react.createElement(
             'button',
-            { key: 'copy', type: 'button', className: 'dfu-chip-copy', title: tFn('copyPath'), onClick: () => copyPath(f.path) },
+            { key: 'copy', type: 'button', className: 'dfu-chip-copy', title: tFn('copyPath'), onClick: () => copyPath(f.path || '') },
             tFn('copyPath'),
           ),
         )
@@ -573,8 +689,8 @@ export function createClientCore(deps) {
               role: 'dialog',
               'aria-modal': 'true',
               'aria-label': tFn('cancelTitle'),
-              onClick: (event) => event.stopPropagation(),
-              onKeyDown: (event) => {
+              onClick: (event: Event) => event.stopPropagation(),
+              onKeyDown: (event: KeyboardEvent) => {
                 if (event.key === 'Escape') keepUploading(sessionId, asking.id)
               },
             },
@@ -913,7 +1029,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           value: ttl,
           placeholder: '7d',
           spellCheck: false,
-          onChange: (e) => setTtl(e.target.value),
+          onChange: (e: Event) => setTtl((e.target as HTMLInputElement).value),
         }),
       ),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('ttlHint')),
@@ -942,9 +1058,9 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   // The list is read on mount, after each delete, and on demand; nothing polls,
   // because the panel is only open while the user is looking at it.
   function ManagePanel() {
-    const [rows, setRows] = react.useState(null) // null = not loaded yet
+    const [rows, setRows] = react.useState<ClientFileRow[] | null>(null) // null = not loaded yet
     const [error, setError] = react.useState('')
-    const [checked, setChecked] = react.useState({})
+    const [checked, setChecked] = react.useState<Record<string, boolean>>({})
     const [busy, setBusy] = react.useState(false)
     const [asking, setAsking] = react.useState(false)
     const [status, setStatus] = react.useState('')
@@ -967,10 +1083,10 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           setRows(next)
           // Drop selections that are gone (a file may have been deleted from the
           // conversation while this panel stayed open).
-          const live = {}
+          const live: Record<string, boolean> = {}
           next.forEach((f) => { live[f.path] = true })
           setChecked((prev) => {
-            const kept = {}
+            const kept: Record<string, boolean> = {}
             Object.keys(prev).forEach((k) => { if (prev[k] && live[k]) kept[k] = true })
             return kept
           })
@@ -988,14 +1104,14 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const inUseCount = items.filter((f) => f.inUse).length
     const selectable = items.filter((f) => !f.inUse && f.exists)
     const selectedPaths = Object.keys(checked).filter((k) => checked[k])
-    const selectedSet = {}
+    const selectedSet: Record<string, boolean> = {}
     selectedPaths.forEach((p) => { selectedSet[p] = true })
     const selectedRows = items.filter((f) => selectedSet[f.path])
     const selectedBytes = selectedRows.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
     const allSelected = selectable.length > 0 && selectable.every((f) => selectedSet[f.path])
     const totalBytes = items.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
 
-    const toggle = (path) => {
+    const toggle = (path: string) => {
       setStatus('')
       setChecked((prev) => {
         const next = Object.assign({}, prev)
@@ -1009,7 +1125,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         setChecked({})
         return
       }
-      const next = {}
+      const next: Record<string, boolean> = {}
       selectable.forEach((f) => { next[f.path] = true })
       setChecked(next)
     }
@@ -1077,7 +1193,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         // never selectable: the first is the host's cross-session guard, the
         // second has nothing left to delete.
         const locked = f.inUse || !f.exists
-        const badges = []
+        const badges: unknown[] = []
         if (f.inUse) {
           badges.push(react.createElement('span', { key: 'use', className: 'dfu-manage-badge dfu-manage-badge-use', title: tFn('manageInUseHint') }, tFn('manageInUse')))
         }
@@ -1086,7 +1202,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         } else if (f.overdue) {
           badges.push(react.createElement('span', { key: 'over', className: 'dfu-manage-badge' }, tFn('manageOverdue')))
         }
-        const meta = [formatSize(f.size)]
+        const meta: string[] = [formatSize(f.size)]
         if (f.at > 0) meta.push(new Date(f.at).toLocaleString())
         return react.createElement(
           'label',
@@ -1109,7 +1225,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       })
       children.push(react.createElement('div', { className: 'dfu-manage-list' }, list))
 
-      const actions = []
+      const actions: unknown[] = []
       if (selectedPaths.length > 0) {
         actions.push(react.createElement('span', { key: 'n', className: 'dfu-manage-count' }, tf('manageSelected', { n: selectedPaths.length })))
       }
@@ -1146,7 +1262,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           { className: 'dfu-modal-backdrop', onClick: () => setAsking(false) },
           react.createElement(
             'div',
-            { className: 'dfu-modal', onClick: (e) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation() } },
+            { className: 'dfu-modal', onClick: (e: Event) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation() } },
             react.createElement('div', { className: 'dfu-modal-title' }, tFn('manageConfirmTitle')),
             react.createElement('div', { className: 'dfu-modal-body' }, tf('manageConfirmBody', { n: selectedPaths.length })),
             react.createElement('div', { className: 'dfu-modal-file' }, selectedPaths.length + ' · ' + formatSize(selectedBytes)),
@@ -1180,7 +1296,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return null
     const NS = 'http://www.w3.org/2000/svg'
     // The shell icons this instance hid, so a teardown can hand them back.
-    const hidden = new Set()
+    const hidden = new Set<HTMLElement>()
     const build = () => {
       const svg = document.createElementNS(NS, 'svg')
       // The composer's own numbers, so the mark is literally the same drawing:
@@ -1205,7 +1321,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     }
     const patch = () => {
       const label = tFn('settingsTitle')
-      const cells = document.querySelectorAll('nav button')
+      const cells = document.querySelectorAll<HTMLElement>('nav button')
       for (let i = 0; i < cells.length; i += 1) {
         const cell = cells[i]
         const text = cell.textContent
@@ -1218,11 +1334,11 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         }
         // Walk direct children only: the shell's icon is a sibling of the label,
         // so this never reaches into an svg the label itself might carry.
-        let fallback = null
+        let fallback: HTMLElement | null = null
         for (let j = 0; j < cell.children.length; j += 1) {
           const child = cell.children[j]
           if (child.tagName === 'svg' && child.getAttribute('data-dfu-mark') === null) {
-            fallback = child
+            fallback = child as HTMLElement
             break
           }
         }
@@ -1301,7 +1417,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   let warnedMissingAttach = false
 
   /** Set (null clears) our flex order, remembering the inline value replaced. */
-  function applyOrder(el, order) {
+  function applyOrder(el: HTMLElement, order: string | null) {
     if (order === null) {
       const previous = el.getAttribute(ORDER_ATTR)
       if (previous === null) return
@@ -1315,7 +1431,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   }
 
   /** Hide or restore the shell's attach button, remembering its inline display. */
-  function applyHidden(el, hidden) {
+  function applyHidden(el: HTMLElement, hidden: boolean) {
     if (hidden) {
       if (el.hasAttribute(HIDDEN_ATTR)) return
       el.setAttribute(HIDDEN_ATTR, el.style.display || '')
@@ -1333,7 +1449,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
    * the settings-nav mark (which reuses the same glyph).
    * @returns the button, or null when this row is not the shell's composer.
    */
-  function findAttachButton(row) {
+  function findAttachButton(row: HTMLElement): HTMLElement | null {
     const buttons = row.querySelectorAll('button')
     for (let i = 0; i < buttons.length; i += 1) {
       const button = buttons[i]
@@ -1341,7 +1457,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       const path = button.querySelector('svg path')
       if (path === null) continue
       const d = path.getAttribute('d')
-      if (typeof d === 'string' && d.indexOf(ATTACH_GLYPH_PREFIX) === 0) return button
+      if (typeof d === 'string' && d.indexOf(ATTACH_GLYPH_PREFIX) === 0) return button as HTMLElement
     }
     return null
   }
@@ -1350,18 +1466,18 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
    * Place one composer around the shell's attach button.
    * @returns the attach button this row was placed against, or null.
    */
-  function layoutComposer(anchor) {
+  function layoutComposer(anchor: HTMLElement): HTMLElement | null {
     const row = anchor.parentElement
     if (row === null) return null
     const attach = findAttachButton(row)
     if (attach === null) return null
     // The flex item is the button itself, unless the shell wraps it.
-    let attachItem = attach
+    let attachItem: HTMLElement | null = attach
     while (attachItem !== null && attachItem.parentElement !== row) attachItem = attachItem.parentElement
     if (attachItem === null) return null
     applyOrder(anchor, OUR_ORDER)
     const label = anchor.querySelector('.dfu-attach')
-    if (label !== null) applyOrder(label, OUR_ORDER)
+    if (label !== null) applyOrder(label as HTMLElement, OUR_ORDER)
     // Everything the shell draws after its attach button follows ours.
     let passed = false
     const children = row.children
@@ -1371,7 +1487,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         if (child === attachItem) passed = true
         continue
       }
-      if (child !== anchor) applyOrder(child, AFTER_ORDER)
+      if (child !== anchor) applyOrder(child as HTMLElement, AFTER_ORDER)
     }
     applyHidden(attach, replaceOfficial)
     return attach
@@ -1381,7 +1497,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   // instead of a document-wide scan per mutation — the shell mutates the DOM
   // continuously while a reply streams. Any node of it being replaced drops the
   // cache and forces a rescan.
-  let laidOut = null
+  let laidOut: { row: HTMLElement; anchor: HTMLElement; attach: HTMLElement } | null = null
 
   function applyComposerLayout() {
     if (typeof document === 'undefined') return
@@ -1390,11 +1506,13 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       return
     }
     laidOut = null
-    const anchors = document.querySelectorAll(SLOT_ANCHOR)
+    const anchors = document.querySelectorAll<HTMLElement>(SLOT_ANCHOR)
     for (let i = 0; i < anchors.length; i += 1) {
       const anchor = anchors[i]
       const attach = layoutComposer(anchor)
-      if (attach !== null) laidOut = { row: anchor.parentElement, anchor: anchor, attach: attach }
+      if (attach !== null && anchor.parentElement !== null) {
+        laidOut = { row: anchor.parentElement, anchor: anchor, attach: attach }
+      }
     }
     if (laidOut === null && anchors.length > 0 && replaceOfficial && !warnedMissingAttach) {
       // A composer without a recognizable attach button (a shell whose glyph or
@@ -1411,14 +1529,14 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   function restoreComposerLayout() {
     if (typeof document === 'undefined') return
     laidOut = null
-    const marked = document.querySelectorAll('[' + ORDER_ATTR + '], [' + HIDDEN_ATTR + ']')
+    const marked = document.querySelectorAll<HTMLElement>('[' + ORDER_ATTR + '], [' + HIDDEN_ATTR + ']')
     for (let i = 0; i < marked.length; i += 1) {
       applyOrder(marked[i], null)
       applyHidden(marked[i], false)
     }
   }
 
-  function applyReplaceOfficial(next) {
+  function applyReplaceOfficial(next: boolean) {
     const value = next === true
     if (value === replaceOfficial) return
     replaceOfficial = value
@@ -1452,10 +1570,10 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
 
   // --- plugin entry ---------------------------------------------------------
 
-  function apply(ctx) {
-    const slots = ctx.get('slots')
+  function apply(ctx: PluginContext) {
+    const slots = ctx.get<import('../types.js').SlotsService>('slots')
     if (slots === undefined) return
-    const locale = ctx.get('locale')
+    const locale = ctx.get<import('../types.js').LocaleService>('locale')
     if (locale !== undefined) {
       try {
         locale.register('dfu', 'zh', DICT.zh)
@@ -1493,13 +1611,13 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     slots.inject('conversation.input.left', () =>
       slots.register(
         { name: 'conversation.input.left', id: 'dfu-attach', order: 0 },
-        (props) => react.createElement(AttachButton, props),
+        (props) => react.createElement(AttachButton, props as Record<string, unknown> | undefined),
       ),
     )
     slots.inject('conversation.input.dock', () =>
       slots.register(
         { name: 'conversation.input.dock', id: 'dfu-uploads', order: 5 },
-        (props) => react.createElement(UploadChips, props),
+        (props) => react.createElement(UploadChips, props as Record<string, unknown> | undefined),
       ),
     )
   }

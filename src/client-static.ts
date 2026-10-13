@@ -1,11 +1,21 @@
-// GENERATED — do not edit. Edit src/core/client-core.js or this template, then
-// run `node scripts/build-client.mjs` to regenerate client/src/client.js.
+// GENERATED — do not edit. Edit src/core/client.ts or this template, then
+// run `node scripts/build.mjs` to regenerate client/src/client.js.
 // __CORE__
 
 // Guarded browser style insertion (the web build may provide a cleaner seam).
+import type {
+  ClientCore, ClientCoreDeps, DfuConfig, PathArgs, ReactLike, UploadArgs, UploadResult,
+} from './core/client.js'
+import type { PluginContext } from './types.js'
+
+// The inlined core is injected at the __CORE__ marker above by the build; the
+// declaration below is erased on compile, so the emitted file stays free of
+// imports — the web loader factory inlines it verbatim.
+declare const createClientCore: (deps: ClientCoreDeps) => ClientCore
+
 const ensureStyles = (() => {
   let done = false
-  return (css) => {
+  return (css: string) => {
     if (done) return
     done = true
     try {
@@ -20,31 +30,31 @@ const ensureStyles = (() => {
   }
 })()
 
-// The build wrapper (scripts/build-client.mjs) replaces the marked line below
-// with `let react = require("react")` (resolved by the web module loader's
-// module map). Standalone (unwrapped) consumers keep the null fallback and
-// apply() becomes a no-op. The marker is load-bearing: injecting a plain
+// The build wrapper (scripts/build.mjs) replaces the marked line below with
+// `let react = require("react")` (resolved by the web module loader's module
+// map). Standalone (unwrapped) consumers keep the null fallback and apply()
+// becomes a no-op. The marker is load-bearing: injecting a plain
 // `react = require("react")` at the top of the factory cannot work — this
 // `let` declaration sits in the same function scope, so the early assignment
-// throws "Cannot access 'react' before initialization" (TDZ), and a `var`
-// here would instead reset the binding back to null after the injection.
-// Keep this source free of ESM imports so the wrapper can inline it verbatim.
-let react = null // __REACT__
+// throws "Cannot access 'react' before initialization" (TDZ), and a `var` here
+// would instead reset the binding back to null after the injection.
+// Keep this source free of value imports so the wrapper can inline it verbatim.
+let react: ReactLike | null = null // __REACT__
 
 export const inject = ['slots', 'locale']
 
-export function apply(ctx) {
-  if (react === null || react.createElement === undefined) return
+export function apply(ctx: PluginContext) {
+  if (react === null || typeof react.createElement !== 'function') return
   const core = createClientCore({
     react: react,
     // Static transport: the browser posts the File itself to the host route, so
     // the page never holds the bytes (and the route never sees base64). XHR
     // rather than fetch, because only XHR reports progress for a Blob body —
     // the same carrier the official uploader uses.
-    upload: (args) => new Promise((resolve, reject) => {
+    upload: (args: UploadArgs) => new Promise<UploadResult>((resolve, reject) => {
       if (args && args.file) {
         const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
-          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId) +
+          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(String(args.sessionId)) +
           '&size=' + encodeURIComponent(String((args.file && args.file.size) || args.size || 0))
         const xhr = new XMLHttpRequest()
         xhr.open('POST', url)
@@ -53,7 +63,7 @@ export function apply(ctx) {
         if (typeof args.onProgress === 'function') {
           xhr.upload.onprogress = (event) => {
             try {
-              args.onProgress(event.loaded, event.lengthComputable ? event.total : (args.file.size || 0))
+              args.onProgress!(event.loaded, event.lengthComputable ? event.total : (args.file!.size || 0))
             } catch {
               // progress is advisory
             }
@@ -101,29 +111,29 @@ export function apply(ctx) {
       }
       // Encoded fallback for a caller that hands over bytes directly.
       try {
-        const bytes = Uint8Array.from(atob(args.base64), (c) => c.charCodeAt(0))
+        const bytes = Uint8Array.from(atob(args.base64 as string), (c) => c.charCodeAt(0))
         const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
-          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(args.sessionId)
-        const init = { method: 'POST', body: bytes }
+          '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(String(args.sessionId))
+        const init: RequestInit = { method: 'POST', body: bytes }
         if (args.signal) init.signal = args.signal
         fetch(url, init).then((res) => res.json()).then(resolve).catch(reject)
       } catch (err) {
         reject(err)
       }
     }),
-    remove: async (args) => {
-      const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
+    remove: async (args: PathArgs) => {
+      const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(String(args.sessionId)) + '&path=' + encodeURIComponent(args.path)
       await fetch(url, { method: 'POST' })
     },
-    delete: async (args) => {
-      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(args.sessionId) + '&path=' + encodeURIComponent(args.path)
+    delete: async (args: PathArgs) => {
+      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(String(args.sessionId)) + '&path=' + encodeURIComponent(args.path)
       await fetch(url, { method: 'POST' })
     },
     configGet: async () => {
       const res = await fetch('/dsh-web-file-uploader/config?action=get')
       return res.json()
     },
-    configSet: async (cfg) => {
+    configSet: async (cfg: Partial<DfuConfig>) => {
       const res = await fetch('/dsh-web-file-uploader/config?action=set', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -136,7 +146,7 @@ export function apply(ctx) {
       const res = await fetch('/dsh-web-file-uploader/files')
       return res.json()
     },
-    deleteMany: async (args) => {
+    deleteMany: async (args: { sessionId?: string; paths: string[] }) => {
       const res = await fetch('/dsh-web-file-uploader/delete-many', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -144,7 +154,7 @@ export function apply(ctx) {
       })
       return res.json()
     },
-    insertStyles: (css) => ensureStyles(css),
+    insertStyles: (css: string) => ensureStyles(css),
   })
   return core.apply(ctx)
 }
