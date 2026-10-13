@@ -92,9 +92,9 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 Re-uploads cannot flood storage:
 
-1. On upload, the plugin computes the **SHA-256** of the decoded bytes
-   (dynamic mode pipes `base64 -d | sha256sum` through the shell service;
-   the static bundle uses `node:crypto`).
+1. On upload, the plugin computes the **SHA-256** of the decoded bytes (the
+   host hashes the request body while streaming it to the staging file with
+   `node:crypto`).
 2. A persisted index at `uploads/.dfu-index.json` maps `hash → stored path`.
 3. If identical content is uploaded again (same name or different name), the
    existing stored copy is **reused** — no new file is written, no `-1`
@@ -137,12 +137,11 @@ race in-flight writes; no background task is required.
   tab carries its own paperclip mark - the composer button's own diagonal
   glyph, at the same scale - so it never reads as the gear rows other plugins
   get): the retention field and the *replace the official attach button*
-  switch share one Save button. The static bundle persists both in
+  switch share one Save button. The bundle persists both in
   `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial }`) and merges
   updates field by field, so saving one never clears the other. The environment
   variable `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a
-  fallback before the default. In dynamic (session) mode the setting lives in
-  memory, overlaid over the optional `dsh-web-file-uploader` settings namespace.
+  fallback before the default.
 
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.
@@ -194,33 +193,20 @@ kept (`removed: false`) but this session's card is still cleared.
 
 ## Attachment size limits
 
-- **No per-file cap.** The static bundle writes the request body through as it
-  arrives while hashing the same pass; the dynamic plugin has the browser slice
-  the File and append one chunk per RPC call. Neither path holds the file in
-  memory (a 120 MiB upload grew the process by < 1 MiB), so the only bound left
-  is disk space.
-- The card shows a percentage while uploading: XHR `upload.onprogress` in the
-  static bundle, sent-chunk accounting in the dynamic plugin.
-- **The fallback path still has a ceiling.** A caller that hands over base64
-  instead of a `File` (the old call shape) stays under the single-shot 64 MiB
-  base64 / ≈48 MiB payload cap; that path is kept for compatibility only.
+- **No per-file cap.** The host writes the request body through to a staging
+  file as it arrives while hashing the same pass, so the only bound left is
+  disk space (a 120 MiB upload grew the process by < 1 MiB).
+- The card shows a percentage while uploading, from XHR `upload.onprogress`.
+- **The encoded fallback** (a caller handing over base64 instead of a `File`)
+  decodes in the browser and posts the bytes through the same streaming route
+  — no per-file cap, though the decoded copy does live in page memory.
 - Images additionally follow the deployment's `attachments` limits (per-message
   byte/pixel caps) when injected natively for multimodal models.
 
 ## Installation
 
-### A. Dynamic plugin (current session, no install)
-
-```text
-cordis_define + cordis_run   # host = src/host.js, client = src/client.js
-```
-
-Approve the run card and the paperclip button appears immediately. The plugin
-is process-local: after a restart, define and run it again.
-
-### B. Static bundle (persistent, `dsh plugin`)
-
-The package declares `dsh.bundle.patch` (see `cordis.patch.yml`), so
+The plugin ships as a **static bundle** — a persistent dsh profile layer. The
+package declares `dsh.bundle.patch` (see `cordis.patch.yml`), so
 `dsh plugin --profile web add` recognizes it as a profile layer. Any
 pnpm-supported source works:
 
@@ -232,7 +218,7 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 dsh plugin --profile web add ../dsh-web-file-uploader
 
 # Tarball
-dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
+dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.1.tgz
 
 # npm registry (after publishing)
 dsh plugin --profile web add dsh-web-file-uploader
@@ -272,19 +258,14 @@ before re-adding it. Details: [PUBLISHING.md](PUBLISHING.md#update).
 ```
 Browser (Client)                          DSH host (Host)
 ─────────────                             ─────────────────
-conversation.input.left                   harness.handle('upload-begin'/'upload-chunk'/
-  └ paperclip ── File (sliced) ┐              'upload-finish'/'upload-abort')  [dynamic]
-                              │           webServer route POST /upload        [static]
-                              ▼           ┌ sandboxPolicy.resolve() → workspace root
-              File slices / body          ├ session cwd / DSH_HOME + /uploads/
-                              │           ├ stage .dfu-tmp-*, incremental SHA-256
-                              ▼           ├ commit: dedup → name → move → .dfu-index.json
-                                          └ base64 -d >> tmp (dynamic) / node:fs stream (static)
-conversation.input.dock
-  └ attachment cards (persist)            harness.handle('remove', …) / remove route
-       └ × closes card → stop injecting     └ pending entry deleted (file kept)
-       └ 🗑 deletes card                  harness.handle('delete', …) / delete route
-                                              └ pending dropped → unlink + index scrub
+conversation.input.left                   webServer route POST /upload
+  └ paperclip ── File (body) ────────────► stage .dfu-tmp-*, incremental SHA-256
+                                            commit: dedup → name → move → .dfu-index.json
+                                            $DSH_HOME/uploads
+conversation.input.dock                   remove route (keep file)
+  └ attachment cards (persist)             └ pending entry deleted (file kept)
+       └ × closes card → stop injecting    delete route (permanent)
+       └ 🗑 deletes card                     └ pending dropped → unlink + index scrub
                                            lazy TTL sweep (upload / delete / start)
                                               └ remove files past TTL, not in pending
                                           agent/pre-step waterfall
@@ -293,19 +274,13 @@ conversation.input.dock
                                              └ path text block (user messages only)
 ```
 
-Why does the dynamic mode go through the shell's `base64 -d`? The dynamic
-sandbox disables `require`, and the `fs` service only writes whole UTF-8 text —
-so binary has no other way to disk than the shell service's `stdin`. Appending
-per chunk (`>>`) keeps each command bounded by the chunk size instead of the
-file size. The static bundle has no such restriction and streams with
-`node:fs` instead.
+The browser never holds the bytes as base64: the `File` itself is the request
+body, and the host streams it to a staging file while hashing the same pass.
 
 ## Storage location
 
-| Mode | Destination |
-|---|---|
-| Dynamic plugin | `<session workspace>/uploads/` (sandboxed shell/fs cannot leave the workspace) |
-| Static bundle | `$DSH_HOME/uploads` (default `~/.dsh/uploads`) via `node:fs` — the dsh data directory |
+Uploads land in `$DSH_HOME/uploads` (default `~/.dsh/uploads`) via `node:fs` —
+the dsh data directory.
 
 The dedup index (`uploads/.dfu-index.json`) lives next to the stored files and
 maps `hash → { path, at }` (see [Deduplication](#deduplication) and
@@ -313,47 +288,52 @@ maps `hash → { path, at }` (see [Deduplication](#deduplication) and
 
 ## Repository layout
 
-The project follows a **single-source-of-truth core + thin seam** architecture:
-all business logic lives in `src/core/*`; the dynamic plugin and the static
-bundle are thin adapters over it, so changes are made once and both sides pick
-them up.
+The project follows a **single-source-of-truth core + thin seam** architecture,
+written in TypeScript: all business logic lives in `src/core/`; the shipped
+bundle is a thin adapter over it, so changes are made once.
 
 ```
 dsh-web-file-uploader/
-├── src/core/
-│   ├── host-core.js        # canonical host logic (transport-agnostic, DI)
-│   └── client-core.js      # canonical client logic (transport-agnostic, DI)
-├── src/seams/
-│   ├── host-dynamic.template.js     # dynamic host seam (harness + shell/fs)
-│   ├── client-dynamic.template.js   # dynamic client seam (host.call + React)
-│   └── client-static.template.js    # static client seam (fetch + module react)
-├── src/host.js             # GENERATED dynamic host (core inlined) — do not edit
-├── src/client.js           # GENERATED dynamic client (core inlined) — do not edit
-├── lib/index.js            # static host seam (imports core; node:fs/crypto/webServer)
-├── client/src/client.js    # GENERATED static client source — do not edit
+├── src/
+│   ├── core/
+│   │   ├── host.ts             # canonical host logic (transport-agnostic, DI)
+│   │   └── client.ts           # canonical client logic (transport-agnostic, DI)
+│   ├── index.ts                # host seam: webServer routes + node:fs/crypto
+│   ├── client-static.ts        # client seam: XHR/fetch transport + module react
+│   └── types.ts                # hand-maintained subset of the dsh plugin API
+├── lib/                        # BUILD OUTPUT (committed): the shipped bundle
+│   ├── index.js                # compiled host half (imports only ./core/*)
+│   ├── core/host.js
+│   └── client.js               # client core inlined into the web loader factory
+├── client/src/client.js        # BUILD OUTPUT: the dsh.client scan target
+├── test/
+│   ├── host.test.ts            # host core regression suite (streaming intake)
+│   └── settings-panel.test.ts  # settings panel suite (stub React, no browser)
 ├── scripts/
-│   ├── build-dynamic.mjs   # inlines cores into seams -> src/*.js + client/src/client.js
-│   └── build-client.mjs    # wraps client/src/client.js -> lib/client.js
-├── cordis.patch.yml        # dsh.bundle patch (profile layer row)
-├── package.json            # publishable manifest (dsh.bundle + dsh.client)
-├── PUBLISHING.md           # install & npm publish guide
+│   ├── build.mjs               # tsc + inline the client core + wrap the factory
+│   └── sync-profile.mjs        # hot-patch an installed profile, then verify
+├── tsconfig.json               # strict; compiles src/ into lib/
+├── cordis.patch.yml            # dsh.bundle patch (profile layer row)
+├── package.json                # publishable manifest (dsh.bundle + dsh.client)
+├── PUBLISHING.md               # install & npm publish guide
 ├── README.md / README_zh_CN.md
-└── LICENSE                 # MIT
+└── LICENSE                     # MIT
 ```
 
-**How to change code**: edit `src/core/*` (or a seam), then run
-`pnpm build` — it regenerates the dynamic sources (`src/host.js`,
-`src/client.js`) and the static client bundle (`lib/client.js`). For the
-running dynamic plugin, redeploy the regenerated `src/host.js` /
-`src/client.js` via `cordis_define` + `cordis_run`.
+**How to change code**: edit `src/core/*` (or a seam), then run `pnpm build` —
+it compiles the host half into `lib/` and regenerates the client bundle
+(`lib/client.js` and `client/src/client.js`). `pnpm typecheck` and `pnpm test`
+gate every change; the suites run the TypeScript sources directly (Node strips
+the types).
 
 ## Development status
 
-- ✅ Dynamic plugin: implemented and verified in live sessions
-- ✅ Card-driven injection, model-aware adaptation, dedup, i18n UI
-- ⚠️ Static client module: built by `scripts/build-client.mjs`, but the
-  `__ModuleLoader__` wrapper must be verified against the real web toolchain
-  before distribution
+- ✅ Static bundle: card-driven injection, model-aware adaptation, dedup, i18n
+  UI, settings panel with batch delete — all covered by the two test suites
+- ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort emulation
+  of the DSH web toolchain output; verify it against the real web build before
+  distributing (compare with a shipped `@deepseek-ai/dsh-client-*`
+  `lib/client.js`)
 
 ## License
 

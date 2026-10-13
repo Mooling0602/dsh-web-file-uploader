@@ -59,7 +59,7 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 重复上传不会刷爆存储：
 
-1. 上传时插件计算解码字节的 **SHA-256**（动态模式经 shell 管道 `base64 -d | sha256sum`；静态 bundle 用 `node:crypto`）
+1. 上传时插件计算解码字节的 **SHA-256**（宿主机边收边写同一遍完成，用 `node:crypto`）
 2. 持久化索引 `uploads/.dfu-index.json`：`hash → { path, at }`（`at` 为上传时间戳，用于清理）
 3. 再次上传**相同内容**（同名或不同名）→ **复用已有存储副本**，不写新文件、不产生 `-1` 副本，响应带 `dedup: true`
 4. 上传经 Promise 队列串行化，并发相同上传不会竞态；索引条目失效（文件被删）时自动回退重新存储
@@ -83,7 +83,7 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 - **默认 TTL**：`7d`（7 天）。
 - **保留期单位**：`1s`（秒）、`1m`（分钟）、`1h`（小时）、`1d`（天）；不带单位的纯数字按**天**（兼容旧行为）。`0`（或空/非法值）**禁用自动 GC** —— 仅在点击 🗑 时显式删除。
-- **配置**：在 **设置 → 文件上传**（DSH 原生设置面板；该选项卡带专属回形针图标，与输入框按钮同为斜 45° 的同一枚图标，不会和其他插件的齿轮图标混淆）中，保留期输入框与「替代官方附件按钮」开关共用同一个保存按钮。静态 bundle 将两项写入 `~/.dsh/dsh-web-file-uploader.json`（`{ ttl, replaceOfficial }`），且按字段合并更新——保存一项不会清掉另一项。环境变量 `DSH_UPLOAD_TTL`（如 `DSH_UPLOAD_TTL=30m`）作为兜底在默认值之前生效。动态（会话）模式下该设置存于内存，并优先读取 `dsh-web-file-uploader` 设置命名空间。
+- **配置**：在 **设置 → 文件上传**（DSH 原生设置面板；该选项卡带专属回形针图标，与输入框按钮同为斜 45° 的同一枚图标，不会和其他插件的齿轮图标混淆）中，保留期输入框与「替代官方附件按钮」开关共用同一个保存按钮。插件将两项写入 `~/.dsh/dsh-web-file-uploader.json`（`{ ttl, replaceOfficial }`），且按字段合并更新——保存一项不会清掉另一项。环境变量 `DSH_UPLOAD_TTL`（如 `DSH_UPLOAD_TTL=30m`）作为兜底在默认值之前生效。
 
 ### 附件按钮的位置与「替代官方按钮」
 
@@ -113,24 +113,14 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 ## 附件大小限制
 
-- **没有单文件上限**：静态 bundle 把浏览器发来的请求体**边收边写**、同一遍算 SHA-256；动态插件由客户端把 File 切片，每片一次 RPC 追加进临时文件。两条路径都不会把整个文件读进内存（实测 120 MiB 上传期间进程内存增长 < 1 MiB），最终只受磁盘空间限制。
-- 上传期间卡片显示百分比：静态模式来自 XHR 的 `upload.onprogress`，动态模式按已发送分片累加。
-- **回退路径仍有上限**：调用方若不传 `File` 而直接给 base64（旧调用形式），仍受单次 64 MiB base64 / 约 48 MiB 载荷限制——该路径只为兼容保留。
+- **没有单文件上限**：宿主机把浏览器发来的请求体**边收边写**进暂存文件、同一遍算 SHA-256，不会把整个文件读进内存（实测 120 MiB 上传期间进程内存增长 < 1 MiB），最终只受磁盘空间限制。
+- 上传期间卡片显示百分比：来自 XHR 的 `upload.onprogress`。
+- **编码回退路径**：调用方若不传 `File` 而直接给 base64，会在浏览器侧解码后走同一条流式路由 POST 出去——没有单文件上限，但解码后的副本会占用页面内存。
 - 多模态原生注入图片时，额外遵循部署的 `attachments` 限制（单消息字节/像素上限）。
 
 ## 安装方式
 
-### A. 动态插件（当前会话，免安装）
-
-```text
-cordis_define + cordis_run   # host = src/host.js，client = src/client.js
-```
-
-批准 Run 卡片后回形针按钮立即出现。插件为进程内临时扩展，重启后需重新定义并运行。
-
-### B. 静态 bundle（持久化，`dsh plugin` 安装）
-
-包声明了 `dsh.bundle.patch`（见 `cordis.patch.yml`），因此 `dsh plugin --profile web add` 会将其识别为 profile 层。pnpm 支持的任意来源均可：
+插件以**静态 bundle** 形式分发——即持久的 dsh profile 层。包声明了 `dsh.bundle.patch`（见 `cordis.patch.yml`），因此 `dsh plugin --profile web add` 会将其识别为 profile 层。pnpm 支持的任意来源均可：
 
 ```bash
 # Git 仓库（推荐分发渠道）
@@ -140,7 +130,7 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 dsh plugin --profile web add ../dsh-web-file-uploader
 
 # Tarball
-dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
+dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.1.tgz
 
 # npm registry（发布后）
 dsh plugin --profile web add dsh-web-file-uploader
@@ -173,72 +163,68 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 ```
 浏览器 (Client)                          DSH 宿主机 (Host)
 ─────────────                             ─────────────────
-conversation.input.left                   harness.handle('upload-begin'/'upload-chunk'/
-  └ 回形针 ── File（切片）─┐                  'upload-finish'/'upload-abort')  [动态]
-                           │             webServer 路由 POST /upload          [静态]
-                           ▼             ┌ sandboxPolicy.resolve() → 工作区根
-                    File 切片 / 请求体      ├ 会话 cwd / DSH_HOME + /uploads/
-                           │             ├ 先写 .dfu-tmp-*，同一遍增量 SHA-256
-                           ▼             ├ 提交：去重 → 定名 → 移入 → .dfu-index.json
-                                           └ base64 -d >> tmp（动态）/ node:fs 流式写入（静态）
-conversation.input.dock
-  └ 附件卡片（持久）                     harness.handle('remove', …) / remove 路由
-       └ × 关闭卡片 → 停止注入              └ pending 条目删除（文件保留）
-       └ 🗑 删除卡片                     harness.handle('delete', …) / delete 路由
-                                              └ 撤销 pending → 删除文件 + 清理索引
+conversation.input.left                   webServer 路由 POST /upload
+  └ 回形针 ── File（请求体）─────────────► 先写 .dfu-tmp-*，同一遍增量 SHA-256
+                                            提交：去重 → 定名 → 移入 → .dfu-index.json
+                                            $DSH_HOME/uploads
+conversation.input.dock                   remove 路由（保留文件）
+  └ 附件卡片（持久）                       └ pending 条目删除（文件保留）
+       └ × 关闭卡片 → 停止注入             delete 路由（永久删除）
+       └ 🗑 删除卡片                        └ 撤销 pending → 删除文件 + 清理索引
                                            懒 TTL 回收（上传 / 删除 / 启动）
                                               └ 删除超 TTL 且不在 pending 中的文件
-                                          agent/pre-step 瀑布
-                                             ├ resolveModelInfo → 是否多模态？
-                                             ├ attachments.saveImage → ImageBlock
-                                             └ 路径文本块（仅用户消息）
+                                           agent/pre-step 瀑布
+                                              ├ resolveModelInfo → 是否多模态？
+                                              ├ attachments.saveImage → ImageBlock
+                                              └ 路径文本块（仅用户消息）
 ```
 
-**为什么动态模式要走 shell 的 `base64 -d`？** 动态插件所在的沙箱禁用了 `require`，`fs` 服务只支持 UTF-8 文本的整文件写入——二进制只能经 shell 服务的 `stdin` 管道给 `base64 -d`。分片追加（`>>`）让每条命令只承载一个分片，内存占用与文件大小无关。静态 bundle 没有这个限制，直接 `node:fs` 流式写入。
+浏览器不会以 base64 形式持有字节：`File` 本身就是请求体，宿主机边收边写进暂存文件，同一遍完成哈希。
 
 ## 保存位置
 
-| 运行模式 | 目的地 |
-|---|---|
-| 动态插件 | `<会话工作区>/uploads/`（沙箱化 shell/fs 无法写出工作区）|
-| 静态 bundle | `$DSH_HOME/uploads`（默认 `~/.dsh/uploads`），经 `node:fs` 直写——即 dsh 数据目录 |
+上传文件落在 `$DSH_HOME/uploads`（默认 `~/.dsh/uploads`），经 `node:fs` 直写——即 dsh 数据目录。
 
 防重传索引（`uploads/.dfu-index.json`）与存储文件同目录。
 
 ## 仓库结构
 
-项目采用**核心单一来源 + 薄缝隙层**架构：所有业务逻辑都在 `src/core/*` 中；动态插件与静态 bundle 只是其上的薄适配层，改一处即可两边生效。
+项目采用**核心单一来源 + 薄缝隙层**架构，全部以 TypeScript 编写：所有业务逻辑都在 `src/core/` 中，发布产物只是其上的薄适配层，改一处即可生效。
 
 ```
 dsh-web-file-uploader/
-├── src/core/
-│   ├── host-core.js        # 规范 Host 逻辑（传输无关，依赖注入）
-│   └── client-core.js      # 规范 Client 逻辑（传输无关，依赖注入）
-├── src/seams/
-│   ├── host-dynamic.template.js     # 动态 Host 缝隙（harness + shell/fs）
-│   ├── client-dynamic.template.js   # 动态 Client 缝隙（host.call + React）
-│   └── client-static.template.js    # 静态 Client 缝隙（fetch + 模块 react）
-├── src/host.js             # 生成产物：动态 Host（核心已内联）—— 勿手改
-├── src/client.js           # 生成产物：动态 Client（核心已内联）—— 勿手改
-├── lib/index.js            # 静态 Host 缝隙（import 核心；node:fs/crypto/webServer）
-├── client/src/client.js    # 生成产物：静态 Client 源码 —— 勿手改
+├── src/
+│   ├── core/
+│   │   ├── host.ts             # 规范 Host 逻辑（传输无关，依赖注入）
+│   │   └── client.ts           # 规范 Client 逻辑（传输无关，依赖注入）
+│   ├── index.ts                # Host 缝隙：webServer 路由 + node:fs/crypto
+│   ├── client-static.ts        # Client 缝隙：XHR/fetch 传输 + 模块 react
+│   └── types.ts                # 手工维护的 dsh 插件 API 类型子集
+├── lib/                        # 构建产物（随仓库提交）：发布用 bundle
+│   ├── index.js                # 编译后的 Host 半（只 import ./core/*）
+│   ├── core/host.js
+│   └── client.js               # Client 核心已内联进 web loader 工厂
+├── client/src/client.js        # 构建产物：dsh.client 扫描目标
+├── test/
+│   ├── host.test.ts            # Host 核心回归套件（流式 intake 路径）
+│   └── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
 ├── scripts/
-│   ├── build-dynamic.mjs   # 核心内联进缝隙 → src/*.js + client/src/client.js
-│   └── build-client.mjs    # 包装 client/src/client.js → lib/client.js
-├── cordis.patch.yml        # dsh.bundle 补丁（profile 层行）
-├── package.json            # 可发布清单（dsh.bundle + dsh.client）
-├── PUBLISHING.md           # 安装与 npm 发布指南
+│   ├── build.mjs               # tsc + 内联 Client 核心 + 包装工厂
+│   └── sync-profile.mjs        # 热补丁已安装 profile 并校验
+├── tsconfig.json               # strict；将 src/ 编译进 lib/
+├── cordis.patch.yml            # dsh.bundle 补丁（profile 层行）
+├── package.json                # 可发布清单（dsh.bundle + dsh.client）
+├── PUBLISHING.md               # 安装与 npm 发布指南
 ├── README.md / README_zh_CN.md
-└── LICENSE                 # MIT
+└── LICENSE                     # MIT
 ```
 
-**如何修改代码**：编辑 `src/core/*`（或缝隙模板），然后运行 `pnpm build`——它会重新生成动态源码（`src/host.js`、`src/client.js`）与静态客户端包（`lib/client.js`）。运行中的动态插件需用重新生成的 `src/host.js` / `src/client.js` 经 `cordis_define` + `cordis_run` 重新部署。
+**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；两套测试直接运行 TypeScript 源码（Node 负责剥离类型）。
 
 ## 开发状态
 
-- ✅ 动态插件：已在真实会话中实现并验证
-- ✅ 卡片驱动注入、模型感知适配、防重传、i18n UI
-- ⚠️ 静态 Client 模块：可由 `scripts/build-client.mjs` 构建，但 `__ModuleLoader__` 包装器需在正式分发前对照真实 web 工具链验证
+- ✅ 静态 bundle：卡片驱动注入、模型感知适配、防重传、i18n UI、带批量删除的设置面板——全部由两套测试覆盖
+- ⚠️ `scripts/build.mjs` 中的客户端包装器是对 DSH web 工具链产物的尽力模拟；正式分发前需对照真实 web 构建验证（与官方 `@deepseek-ai/dsh-client-*` 的 `lib/client.js` 对比）
 
 ## 许可证
 

@@ -18,7 +18,7 @@ dsh plugin --profile web add ../dsh-web-file-uploader
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 # Tarball
-dsh plugin --profile web add ./dsh-web-file-uploader-0.2.0.tgz
+dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.1.tgz
 
 # npm registry (requires publishing, see below)
 dsh plugin --profile web add dsh-web-file-uploader
@@ -35,13 +35,14 @@ After installing, **restart the dsh web process** and refresh the page.
 
 ### Prerequisites
 
-- The client half must be built before install: `pnpm build:client` (writes
-  `lib/client.js`). Local/git installs of a checkout need this build to have
-  run; a published tarball ships the built artifact.
-- Git-hosted installs run the `prepare` script on install. pnpm blocks build
-  scripts by default — allow the exact key pnpm prints in
-  `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run.
-- ⚠️ The client build wrapper in `scripts/build-client.mjs` is a best-effort
+- The bundle must be built before install: `pnpm build` (compiles `src/` into
+  `lib/` and writes `lib/client.js` + `client/src/client.js`). `lib/` is
+  committed, so a fresh clone ships the last build — rebuild after touching
+  `src/`.
+- Git-hosted installs run the `prepare` script on install (it rebuilds the
+  bundle). pnpm blocks build scripts by default — allow the exact key pnpm
+  prints in `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run.
+- ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort
   emulation of the DSH web toolchain output. **Verify it against the real web
   build before distributing** (compare with a shipped
   `@deepseek-ai/dsh-client-*` `lib/client.js`).
@@ -86,9 +87,14 @@ name). **Requires your help** — npm credentials and CI configuration:
 
 ```bash
 pnpm install
-pnpm build:client        # produces lib/client.js
-npm publish              # uses .npmrc auth (npm login)
+pnpm typecheck && pnpm test   # gate the release
+pnpm build                    # produces lib/ + client/src/client.js
+npm publish --tag next        # --tag next keeps 1.0.0-alpha.x off `latest`
 ```
+
+Use `--tag next` for the alpha line so a plain
+`dsh plugin --profile web add dsh-web-file-uploader` keeps resolving to the
+last stable version; drop the flag when 1.0.0 final ships.
 
 ### CI (GitHub Actions)
 
@@ -110,16 +116,18 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build:client
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 ```
 
-Tag a release (`git tag v0.2.0 && git push --tags`) to trigger it.
+Tag a release (`git tag v1.0.0-alpha.1 && git push --tags`) to trigger it.
 
 ## Update
 
@@ -143,8 +151,8 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 ### Local-directory channel
 
-The checkout must be rebuilt before each `add` — `lib/client.js` is a build
-artifact and only `src/` + templates live in git:
+The checkout must be rebuilt before each `add` when `src/` changed — `lib/` is
+committed, so a clean checkout can be added as-is:
 
 ```bash
 cd <path-to-checkout> && pnpm build   # regenerates lib/ + client/src
@@ -171,9 +179,7 @@ dsh plugin --profile web remove dsh-web-file-uploader
 
 ## Compatibility note
 
-- **Dynamic mode** (this repo's `src/`): runs in the current session via
-  `cordis_define` + `cordis_run`; uploads land in `<session workspace>/uploads`
-  because the sandboxed shell/fs cannot write outside the workspace.
-- **Static bundle** (`lib/`, installed via `dsh plugin`): uploads land in
-  `$DSH_HOME/uploads` (default `~/.dsh/uploads`) via `node:fs` — the proper dsh
-  data directory.
+- The plugin ships as a **static bundle only** (installed via `dsh plugin`):
+  uploads land in `$DSH_HOME/uploads` (default `~/.dsh/uploads`) via `node:fs`
+  — the proper dsh data directory. The dynamic (session) mode was removed in
+  1.0.0-alpha.1 together with the TypeScript rewrite.
