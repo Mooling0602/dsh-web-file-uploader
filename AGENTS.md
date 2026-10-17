@@ -11,8 +11,9 @@ This project has a strict language split. Follow it for every change:
 The following are always written in **English**:
 
 - **Commit messages** — use [Conventional Commits](https://www.conventionalcommits.org/)
-  format, e.g. `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`. Keep the
-  summary line imperative and under ~72 characters.
+  format with the type that matches the change's primary purpose (see
+  [Commit types](#commit-types)). Keep the summary line imperative and under
+  ~72 characters.
 - **Code comments and docstrings** — all comments in `src/core/*`,
   `src/index.ts`, `src/client-static.ts`, `scripts/*` are English. Comments on
   the "generated" files (`client/src/client.js`, `lib/client.js`) say *do not
@@ -46,6 +47,25 @@ Everything a **human user sees in the UI** is localized through the app's
 | Code comment | English | `// claimed messages are deep-frozen; clone, don't mutate` |
 | Model prompt | English | `[Attached files] Some files have uploaded with this message: …` |
 | UI button | i18n | `zh: '上传附件'`, `en: 'Attach files'` |
+
+## Commit types
+
+Choose the type from what the commit primarily does, and verify it against the
+staged diff right before committing. Mixed changes take the type of their main
+purpose: a source change that also edits a CI script stays `feat` / `fix`,
+while a CI change that also refreshes docs is `ci`. Editing the release
+workflow or the release-note script is `ci`, not `feat`.
+
+| Type | Use for |
+| --- | --- |
+| `feat`, `fix` | Source changes that affect the plugin's runtime behavior; append `!` for a breaking change (`feat!`, `fix!`). |
+| `ci` | CI/CD changes: `.github/workflows/*`, release-note composition, and the automation that builds or publishes releases. |
+| `refactor` | Restructuring with no runtime behavior change; `refactor!` when the break is deliberate. |
+| `build` | Packaging configuration or build options: `package.json` scripts / `files` / `engines`, `scripts/build.ts`, `tsconfig*.json`. |
+| `release` | Version bumps only, as `release: v<version>`; it triggers the release build, packs the artifacts and pushes the new tag. |
+| `docs` | Documentation, `CHANGELOG.md` entries and repository guides. |
+| `test` | Test-only changes. |
+| `chore` | Repository housekeeping that fits no other type; never use it for a version bump. |
 
 ## Architecture cheat-sheet
 
@@ -128,6 +148,9 @@ writes it. Agents must not invent release entries:
 ## Workflow notes
 
 - Never commit runtime artifacts (`.dfu-*`, `uploads/`) — see `.gitignore`.
+- Before committing, re-read the staged diff and confirm the commit type is
+  accurate (see [Commit types](#commit-types)): correct the type, or split the
+  commit, when it is not.
 - Do not add secrets, tokens, or personal absolute paths (e.g.
   `/home/<user>/...`) to committed files.
 - Verify SSH signatures on commits when the repository uses commit signing.
