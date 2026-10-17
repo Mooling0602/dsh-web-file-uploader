@@ -325,16 +325,16 @@ dsh-web-file-uploader/
 │   ├── host.test.ts            # host core regression suite (streaming intake)
 │   ├── settings-panel.test.ts  # settings panel suite (stub React, no browser)
 │   ├── bundle.test.ts          # loads the shipped client bundle via the loader contract
-│   └── release-notes.test.ts   # CHANGELOG extraction CLI (release-notes gate)
+│   └── release-notes.test.ts   # release-note composition CLI (release-notes gate)
 ├── scripts/
 │   ├── build.ts                # tsc + inline the client core + wrap the factory
-│   ├── release-notes.ts        # extract the tag version's CHANGELOG section
+│   ├── release-notes.ts        # compose the release body from CHANGELOG.md
 │   └── sync-profile.ts         # hot-patch an installed profile, then verify
 ├── tsconfig.json               # strict; compiles src/ into lib/
 ├── cordis.patch.yml            # dsh.bundle patch (profile layer row)
 ├── package.json                # publishable manifest (dsh.bundle + dsh.client)
 ├── PUBLISHING.md               # install & release guide
-├── CHANGELOG.md                # release notes source (CI copies the tag's section)
+├── CHANGELOG.md                # release notes: global Header/Endfix + version sections
 ├── README.md / README_zh_CN.md
 └── LICENSE                     # MIT
 ```

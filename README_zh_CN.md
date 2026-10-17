@@ -218,16 +218,16 @@ dsh-web-file-uploader/
 │   ├── host.test.ts            # Host 核心回归套件（流式 intake 路径）
 │   ├── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
 │   ├── bundle.test.ts          # 通过 loader 契约加载已发布客户端 bundle
-│   └── release-notes.test.ts   # CHANGELOG 抽取 CLI（发布日志门禁）
+│   └── release-notes.test.ts   # 发布日志合成 CLI（发布日志门禁）
 ├── scripts/
 │   ├── build.ts                # tsc + 内联 Client 核心 + 包装工厂
-│   ├── release-notes.ts        # 抽取 tag 对应版本的 CHANGELOG 小节
+│   ├── release-notes.ts        # 由 CHANGELOG.md 合成发布说明正文
 │   └── sync-profile.ts         # 热补丁已安装 profile 并校验
 ├── tsconfig.json               # strict；将 src/ 编译进 lib/
 ├── cordis.patch.yml            # dsh.bundle 补丁（profile 层行）
 ├── package.json                # 可发布清单（dsh.bundle + dsh.client）
 ├── PUBLISHING.md               # 安装与发布指南
-├── CHANGELOG.md                # 发布日志来源（CI 复制对应版本小节）
+├── CHANGELOG.md                # 发布日志：全局 Header/Endfix + 各版本小节
 ├── README.md / README_zh_CN.md
 └── LICENSE                     # MIT
 ```

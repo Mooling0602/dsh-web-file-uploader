@@ -60,7 +60,7 @@ Everything a **human user sees in the UI** is localized through the app's
   `pnpm test` runs `host.test.ts` and `settings-panel.test.ts` against the
   sources, `bundle.test.ts` rebuilds and then loads the shipped `lib/client.js`
   through the web loader contract, and `release-notes.test.ts` covers the
-  `CHANGELOG.md` extraction CLI the release workflow uses. `pnpm build`
+  release-note composition CLI the release workflow uses. `pnpm build`
   (scripts/build.ts) compiles the host half into `lib/` and inlines the client
   core into the web loader factory (`lib/client.js`, plus the unwrapped
   `client/src/client.js` the dsh.client scan reads).
@@ -93,12 +93,21 @@ writes it. Agents must not invent release entries:
   code formatting**. GitHub autolinks bare short hashes in the rendered
   release body; code formatting suppresses the link.
 - Preview what the workflow will publish with
-  `node scripts/release-notes.ts <version>`. The release workflow rejects a
-  missing, empty, or duplicated `## <version>` section and any remaining
-  `hash123` placeholder.
-- Keep the section format the maintainer uses: an exact `## <version>`
-  heading, bold category groups (for example `**CI/CD**`), and bullets that
-  point at the commit short hash.
+  `node scripts/release-notes.ts <version>`: it composes the body from
+  `## Header` + the `## <version>` section + `## Endfix` and derives the
+  Full Changelog compare link. The release workflow rejects a missing, empty,
+  or duplicated `## <version>` section, a missing or empty `## Header` /
+  `## Endfix`, an Endfix without the `**full_changelog!**` placeholder, and any
+  remaining `hash123` placeholder.
+- Keep the format the maintainer uses: an exact `## <version>` heading, `###`
+  category groups (for example `### CI/CD`), and bullets that point at the
+  commit short hash.
+- `## Header` and `## Endfix` are global wrappers around every generated
+  release note and are maintained outside the version sections. Keep
+  `**full_changelog!**` as a placeholder in `## Endfix`: the workflow replaces
+  it with the generated
+  `**Full Changelog**: <repo>/compare/<previous-tag>...<tag>` line, so never
+  hand-write that link.
 
 ## Release conventions
 

@@ -80,9 +80,11 @@ plugin issue** — it is a pnpm store-version mismatch in the web profile:
 
 Releases are cut by CI — `.github/workflows/release.yml` — from **bare version
 tags** (`1.0.0-alpha.3`, no `v` prefix). The only manual input is the
-maintainer-written `CHANGELOG.md` entry: the workflow copies its `## <version>`
-section verbatim into the GitHub Release body, so no notes are generated from
-commits or PRs.
+maintainer-written `CHANGELOG.md` entry: the workflow composes the GitHub
+Release body from the global `## Header` content, the version's
+`## <version>` section and the global `## Endfix` content (titles excluded),
+and generates the `**Full Changelog**` compare link from the previous release
+tag. No notes are generated from commits or PRs.
 
 Every release attaches `dsh-web-file-uploader-<version>.tgz` — the built,
 installable package, since the repository commits no `lib/` — and the run page
@@ -100,15 +102,18 @@ A `v`-prefixed tag does not trigger the workflow. Two steps:
    ```markdown
    ## 1.0.0-alpha.3
 
-   **CI/CD**
+   ### CI/CD
 
    - Add CHANGELOG.md and improve the release workflow in commit 167d6f6.
    ```
 
    The heading is the exact bare version, and commit short hashes stay plain
-   text (no backticks) so GitHub renders them as commit links. Replace the
-   template's `hash123` placeholder before tagging; the workflow rejects a
-   missing, empty, or duplicated section and any leftover `hash123`.
+   text (no backticks) so GitHub renders them as commit links. Category groups
+   are `###` headings. Replace the template's `hash123` placeholder before
+   tagging; the workflow rejects a missing, empty, or duplicated section and
+   any leftover `hash123`. The global `## Header` and `## Endfix` sections are
+   added around the section automatically — keep their content edited in
+   `CHANGELOG.md`, not in a release note.
 
    ```bash
    git add CHANGELOG.md
@@ -143,14 +148,18 @@ picks up the `v` prefix. The workflow then:
 1. rejects a tag that carries a `v` prefix, does not match `package.json`, is
    not valid semver, whose commit is not reachable from `main`, or whose commit
    subject is not `release: v<version>`;
-2. extracts the `## <version>` section from `CHANGELOG.md` and fails when it is
-   missing, empty, duplicated, or still contains the `hash123` placeholder;
+2. composes the body from `CHANGELOG.md` — global `## Header`, the
+   `## <version>` section and global `## Endfix` — and fails when the version
+   section is missing, empty, duplicated, or still contains `hash123`, when
+   `## Header` or `## Endfix` is missing or empty, or when the Endfix has no
+   `**full_changelog!**` placeholder; the generated body ends with a
+   `**Full Changelog**` link covering the previous release tag and this tag;
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
    build modifies a tracked file (`git status` must stay clean; the generated
    output is git-ignored);
 4. packs the npm tarball and asserts the shipped files are inside it;
-5. creates a **GitHub Release** titled `v<version>` whose body is the
-   extracted section, with the tarball attached. Any semver prerelease
+5. creates a **GitHub Release** titled `v<version>` whose body is the composed
+   notes, with the tarball attached. Any semver prerelease
    (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a **pre-release**; a
    final `X.Y.Z` release is marked latest;
 6. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
@@ -160,7 +169,7 @@ picks up the `v` prefix. The workflow then:
 7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
-Preview the notes locally before tagging:
+Preview the composed notes locally before tagging:
 
 ```bash
 node scripts/release-notes.ts 1.0.0-alpha.3
@@ -168,7 +177,9 @@ node scripts/release-notes.ts 1.0.0-alpha.3
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its
 title, tarball, and notes refreshed, and an already-published npm version is
-skipped.
+skipped. This applies to tags that carry the `## Header` / `## Endfix` format;
+a tag from before that format change fails the compose step, so cut a new
+version instead of re-running its release.
 
 ### npm credentials (optional)
 
