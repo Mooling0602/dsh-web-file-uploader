@@ -103,14 +103,17 @@ workflow or the release-note script is `ci`, not `feat`.
 `CHANGELOG.md` is the source of the GitHub Release body, and the maintainer
 writes it. Agents must not invent release entries:
 
-- Do not create, rewrite, prune, or auto-generate changelog entries. `docs:` /
-  `ci:` changes that ship before a release still get their entry from the
-  maintainer.
-- The one mechanical edit agents may make is the template's `hash123`
-  placeholder, when the maintainer prepares a release: replace it with the
-  short hash(es) of the commits the entry describes and leave the rest of the
-  entry untouched. Report a missing or malformed section instead of writing
-  one.
+- Do not create, rewrite, prune, or auto-generate changelog entries unless the
+  maintainer has explicitly authorized it in the conversation (for example
+  "write the changelog" or "release it"). Under that authorization an agent may
+  draft and commit the entry in the maintainer's place, following the format
+  rules below. `docs:` / `ci:` changes that ship before a release still get
+  their entry from the maintainer.
+- Without that authorization, the one mechanical edit agents may make is the
+  template's `hash123` placeholder, when the maintainer prepares a release:
+  replace it with the short hash(es) of the commits the entry describes and
+  leave the rest of the entry untouched. Report a missing or malformed section
+  instead of writing one.
 - Write commit short hashes as **plain text, never in backticks or any other
   code formatting**. GitHub autolinks bare short hashes in the rendered
   release body; code formatting suppresses the link.
