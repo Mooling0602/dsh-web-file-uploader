@@ -78,7 +78,9 @@ body, so no notes are generated from commits or PRs.
 
 ### Cutting a release
 
-The tag name is `v` + the exact `package.json` version. Two steps:
+The tag name is the exact `package.json` version, optionally `v`-prefixed —
+both `1.0.0-alpha.2` and `v1.0.0-alpha.2` trigger the workflow, which strips a
+leading `v` before comparing. Two steps:
 
 1. Add the release's section to `CHANGELOG.md` and commit it:
 

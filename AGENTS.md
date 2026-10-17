@@ -100,6 +100,6 @@ writes it. Agents must not invent release entries:
 - Do not add secrets, tokens, or personal absolute paths (e.g.
   `/home/<user>/...`) to committed files.
 - Verify SSH signatures on commits when the repository uses commit signing.
-- Releases are tag-driven: pushing `v<version>` runs
-  `.github/workflows/release.yml`. Never move or delete a published tag — bump
-  the version instead.
+- Releases are tag-driven: pushing a version tag (`<version>` or
+  `v<version>`) runs `.github/workflows/release.yml`. Never move or delete a
+  published tag — bump the version instead.
