@@ -1,10 +1,11 @@
 # .github/workflows/release.yml — publish a release from a version tag.
 #
-# Push a tag named `v<package.json version>` (for example v1.0.0-alpha.2) and
-# this workflow runs the full gate, packs the npm tarball, creates a GitHub
-# Release whose body is the `## <version>` section of CHANGELOG.md (flagged as
-# a pre-release for any semver prerelease: alpha, beta, rc, ...) and publishes
-# to npm when the NODE_AUTH_TOKEN secret is configured.
+# Push a version tag — `<package.json version>`, optionally v-prefixed, for
+# example 1.0.0-alpha.2 or v1.0.0-alpha.2 — and this workflow runs the full
+# gate, packs the npm tarball, creates a GitHub Release whose body is the
+# `## <version>` section of CHANGELOG.md (flagged as a pre-release for any
+# semver prerelease: alpha, beta, rc, ...) and publishes to npm when the
+# NODE_AUTH_TOKEN secret is configured.
 #
 # See PUBLISHING.md for the release checklist, the npm dist-tag policy and the
 # optional npm credentials.
@@ -13,7 +14,9 @@ name: release
 on:
   push:
     tags:
+      # `v1.0.0-alpha.2` and the historical bare `1.0.0-alpha.2` both trigger.
       - "v*"
+      - "[0-9]*"
   workflow_dispatch:
     inputs:
       tag:
