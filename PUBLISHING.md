@@ -72,45 +72,72 @@ plugin issue** — it is a pnpm store-version mismatch in the web profile:
 ## Releases
 
 Releases are cut by CI — `.github/workflows/release.yml` — from version tags.
-Nothing has to be published by hand.
+The only manual input is the maintainer-written `CHANGELOG.md` entry: the
+workflow copies its `## <version>` section verbatim into the GitHub Release
+body, so no notes are generated from commits or PRs.
 
 ### Cutting a release
 
-The tag name is `v` + the exact `package.json` version. One command bumps the
-version, commits it and creates the tag:
+The tag name is `v` + the exact `package.json` version. Two steps:
 
-```bash
-# pre-release: 1.0.0-alpha.1 -> 1.0.0-alpha.2 (same for -beta.N / -rc.N)
-npm version 1.0.0-alpha.2 -m "chore(release): %s"
-# final release
-npm version 1.0.0 -m "chore(release): %s"
+1. Add the release's section to `CHANGELOG.md` and commit it:
 
-# push the commit and the tag — the workflow does the rest
-git push origin main --follow-tags
-```
+   ```markdown
+   ## 1.0.0-alpha.2
+
+   **CI/CD**
+
+   - Add CHANGELOG.md and improve the release workflow in commit `167d6f6`.
+   ```
+
+   ```bash
+   git add CHANGELOG.md
+   git commit -m "docs: update the 1.0.0-alpha.2 changelog"
+   ```
+
+2. Bump the version and create the tag:
+
+   ```bash
+   # pre-release: 1.0.0-alpha.1 -> 1.0.0-alpha.2 (same for -beta.N / -rc.N)
+   npm version 1.0.0-alpha.2 -m "chore(release): %s"
+   # final release
+   npm version 1.0.0 -m "chore(release): %s"
+
+   # push the commits and the tag — the workflow does the rest
+   git push origin main --follow-tags
+   ```
 
 `npm version` writes `package.json`, commits `chore(release): <version>` and
-creates the `v<version>` tag (the `%s` placeholder is the version). The
+creates the annotated `v<version>` tag (`--follow-tags` pushes it). The
 workflow then:
 
 1. rejects a tag that does not match `package.json`, is not valid semver, or
    whose commit is not reachable from `main`;
-2. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
+2. extracts the `## <version>` section from `CHANGELOG.md` and fails when it is
+   missing, empty, duplicated, or still contains the `hash123` placeholder;
+3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
    committed bundle is not reproducible (`git status` must stay clean after
    the build);
-3. packs the npm tarball and asserts the shipped files are inside it;
-4. creates a **GitHub Release** with the tarball attached. Any semver
-   prerelease (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a
-   **pre-release**; a final `X.Y.Z` release is marked latest;
-5. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
+4. packs the npm tarball and asserts the shipped files are inside it;
+5. creates a **GitHub Release** whose body is the extracted section, with the
+   tarball attached. Any semver prerelease (`-alpha.N`, `-beta.N`, `-rc.N`,
+   ...) is flagged as a **pre-release**; a final `X.Y.Z` release is marked
+   latest;
+6. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
    `--tag next` so a plain `dsh plugin ... add dsh-web-file-uploader` keeps
    resolving to the last stable version, final releases use `latest`; both are
    published with `--provenance` from this public repository;
-6. uploads the tarball as a workflow artifact and writes a summary table to
+7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
+Preview the notes locally before tagging:
+
+```bash
+node scripts/release-notes.mjs 1.0.0-alpha.2
+```
+
 Re-running a failed workflow is safe: an existing GitHub Release gets its
-tarball replaced and an already-published npm version is skipped.
+tarball and notes refreshed and an already-published npm version is skipped.
 
 ### npm credentials (optional)
 

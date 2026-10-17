@@ -207,23 +207,27 @@ dsh-web-file-uploader/
 ├── client/src/client.js        # 构建产物：dsh.client 扫描目标
 ├── test/
 │   ├── host.test.ts            # Host 核心回归套件（流式 intake 路径）
-│   └── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
+│   ├── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
+│   ├── bundle.test.mjs         # 通过 loader 契约加载已发布客户端 bundle
+│   └── release-notes.test.mjs  # CHANGELOG 抽取 CLI（发布日志门禁）
 ├── scripts/
 │   ├── build.mjs               # tsc + 内联 Client 核心 + 包装工厂
+│   ├── release-notes.mjs       # 抽取 tag 对应版本的 CHANGELOG 小节
 │   └── sync-profile.mjs        # 热补丁已安装 profile 并校验
 ├── tsconfig.json               # strict；将 src/ 编译进 lib/
 ├── cordis.patch.yml            # dsh.bundle 补丁（profile 层行）
 ├── package.json                # 可发布清单（dsh.bundle + dsh.client）
-├── PUBLISHING.md               # 安装与 npm 发布指南
+├── PUBLISHING.md               # 安装与发布指南
+├── CHANGELOG.md                # 发布日志来源（CI 复制对应版本小节）
 ├── README.md / README_zh_CN.md
 └── LICENSE                     # MIT
 ```
 
-**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；两套测试直接运行 TypeScript 源码（Node 负责剥离类型）。
+**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；TypeScript 套件直接运行源码（Node 负责剥离类型），`.mjs` 套件则加载已发布 bundle 与发布日志抽取 CLI。
 
 ## 开发状态
 
-- ✅ 静态 bundle：卡片驱动注入、模型感知适配、防重传、i18n UI、带批量删除的设置面板——全部由两套测试覆盖
+- ✅ 静态 bundle：卡片驱动注入、模型感知适配、防重传、i18n UI、带批量删除的设置面板——全部由测试覆盖
 - ⚠️ `scripts/build.mjs` 中的客户端包装器是对 DSH web 工具链产物的尽力模拟；正式分发前需对照真实 web 构建验证（与官方 `@deepseek-ai/dsh-client-*` 的 `lib/client.js` 对比）
 
 ## 许可证

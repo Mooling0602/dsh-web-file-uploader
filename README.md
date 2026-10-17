@@ -308,14 +308,18 @@ dsh-web-file-uploader/
 ├── client/src/client.js        # BUILD OUTPUT: the dsh.client scan target
 ├── test/
 │   ├── host.test.ts            # host core regression suite (streaming intake)
-│   └── settings-panel.test.ts  # settings panel suite (stub React, no browser)
+│   ├── settings-panel.test.ts  # settings panel suite (stub React, no browser)
+│   ├── bundle.test.mjs         # loads the shipped client bundle via the loader contract
+│   └── release-notes.test.mjs  # CHANGELOG extraction CLI (release-notes gate)
 ├── scripts/
 │   ├── build.mjs               # tsc + inline the client core + wrap the factory
+│   ├── release-notes.mjs       # extract the tag version's CHANGELOG section
 │   └── sync-profile.mjs        # hot-patch an installed profile, then verify
 ├── tsconfig.json               # strict; compiles src/ into lib/
 ├── cordis.patch.yml            # dsh.bundle patch (profile layer row)
 ├── package.json                # publishable manifest (dsh.bundle + dsh.client)
-├── PUBLISHING.md               # install & npm publish guide
+├── PUBLISHING.md               # install & release guide
+├── CHANGELOG.md                # release notes source (CI copies the tag's section)
 ├── README.md / README_zh_CN.md
 └── LICENSE                     # MIT
 ```
@@ -323,13 +327,14 @@ dsh-web-file-uploader/
 **How to change code**: edit `src/core/*` (or a seam), then run `pnpm build` —
 it compiles the host half into `lib/` and regenerates the client bundle
 (`lib/client.js` and `client/src/client.js`). `pnpm typecheck` and `pnpm test`
-gate every change; the suites run the TypeScript sources directly (Node strips
-the types).
+gate every change; the TypeScript suites run the sources directly (Node strips
+the types) and the `.mjs` suites load the shipped bundle and exercise the
+release-notes CLI.
 
 ## Development status
 
 - ✅ Static bundle: card-driven injection, model-aware adaptation, dedup, i18n
-  UI, settings panel with batch delete — all covered by the two test suites
+  UI, settings panel with batch delete — all covered by the test suites
 - ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort emulation
   of the DSH web toolchain output; verify it against the real web build before
   distributing (compare with a shipped `@deepseek-ai/dsh-client-*`

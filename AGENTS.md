@@ -57,16 +57,33 @@ Everything a **human user sees in the UI** is localized through the app's
 - **Toolchain**: TypeScript (`strict`) compiled by `tsc`; `pnpm typecheck`
   checks sources and tests, `pnpm test` runs the suites — `host.test.ts` and
   `settings-panel.test.ts` run the TypeScript sources directly (Node ≥ 22.6
-  strips the types), and `bundle.test.mjs` rebuilds and then loads the shipped
-  `lib/client.js` through the web loader contract. `pnpm build`
-  (scripts/build.mjs) compiles the host half into `lib/` and inlines the
-  client core into the web loader factory (`lib/client.js`, plus the
-  unwrapped `client/src/client.js` the dsh.client scan reads).
+  strips the types), `bundle.test.mjs` rebuilds and then loads the shipped
+  `lib/client.js` through the web loader contract, and
+  `release-notes.test.mjs` covers the `CHANGELOG.md` extraction CLI the release
+  workflow uses. `pnpm build` (scripts/build.mjs) compiles the host half into
+  `lib/` and inlines the client core into the web loader factory
+  (`lib/client.js`, plus the unwrapped `client/src/client.js` the dsh.client
+  scan reads).
 - **dsh API types** are a hand-maintained subset in `src/types.ts` — dsh ships
   none and its interfaces carry breaking changes.
 - **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
   than copying `lib/` by hand. `lib/` is self-contained (the host half imports
   only `./core/*`), so a full copy of it is enough.
+
+## Changelog ownership
+
+`CHANGELOG.md` is the source of the GitHub Release body, and the maintainer
+writes it. Agents must not invent release entries:
+
+- Do not create, rewrite, prune, or auto-generate changelog entries unless the
+  maintainer explicitly asks for that exact edit. `docs:`/`ci:` changes that
+  ship before a release still get their entry from the maintainer.
+- Running `node scripts/release-notes.mjs <version>` to preview the notes is
+  fine, and so is reporting a stale `hash123` placeholder or a missing section.
+  Fixing those is a maintainer decision, not an agent one.
+- Keep the section format the maintainer uses: an exact `## <version>` heading,
+  bold category groups (for example `**CI/CD**`), and bullets that point at the
+  commit short hash.
 
 ## Workflow notes
 
@@ -74,3 +91,6 @@ Everything a **human user sees in the UI** is localized through the app's
 - Do not add secrets, tokens, or personal absolute paths (e.g.
   `/home/<user>/...`) to committed files.
 - Verify SSH signatures on commits when the repository uses commit signing.
+- Releases are tag-driven: pushing `v<version>` runs
+  `.github/workflows/release.yml`. Never move or delete a published tag — bump
+  the version instead.
