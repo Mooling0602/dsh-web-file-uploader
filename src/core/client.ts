@@ -183,6 +183,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       uploading: '上传中…',
       saved: '已保存',
       copyPath: '复制路径',
+      copyAllPaths: '复制全部路径',
+      copiedAllPaths: '已复制 {n} 条路径',
+      dockCount: '{n} 个文件',
+      clearAllCards: '全部移除',
+      clearAllHint: '从本会话移除全部已保存的文件卡片；文件仍保留在磁盘上，可在插件设置中管理。',
+      clearAllQuestion: '移除 {n} 个卡片？',
+      clearAllConfirm: '确认移除',
+      clearAllCancel: '取消',
       remove: '移除',
       delete: '删除文件（不可找回）',
       dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
@@ -232,6 +240,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       uploading: 'Uploading…',
       saved: 'Saved',
       copyPath: 'Copy path',
+      copyAllPaths: 'Copy all paths',
+      copiedAllPaths: 'Copied {n} paths',
+      dockCount: '{n} files',
+      clearAllCards: 'Remove all',
+      clearAllHint: 'Removes every saved file card from this session; the files stay on disk and remain manageable in the plugin settings.',
+      clearAllQuestion: 'Remove {n} cards?',
+      clearAllConfirm: 'Remove',
+      clearAllCancel: 'Cancel',
       remove: 'Remove',
       delete: 'Delete file (permanent)',
       dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
@@ -383,10 +399,10 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     return v
   }
 
-  const copyPath = (path: string) => {
+  const copyText = (text: string) => {
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        navigator.clipboard.writeText(path).catch(() => {})
+        navigator.clipboard.writeText(text).catch(() => {})
       }
     } catch {
       // clipboard unavailable — ignore
@@ -643,8 +659,16 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
 
   function UploadChips(props: unknown) {
     useStoreVersion()
+    // Batch-state hooks must run before the empty-list early return so the hook
+    // order stays stable when the last card closes.
+    const [copiedAll, setCopiedAll] = react.useState(false)
+    const [clearArmed, setClearArmed] = react.useState(false)
     const sessionId = sessionIdOf(props)
     const files = store.files(sessionId)
+    react.useEffect(() => {
+      // Drop an armed "remove all" once individual cards thin the list out.
+      if (files.length <= 1) setClearArmed(false)
+    }, [files.length])
     if (!files.length) return null
     const chips: unknown[] = []
     files.forEach((f) => {
@@ -691,7 +715,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         actions.push(
           react.createElement(
             'button',
-            { key: 'copy', type: 'button', className: 'dfu-chip-copy', title: tFn('copyPath'), onClick: () => copyPath(f.path || '') },
+            { key: 'copy', type: 'button', className: 'dfu-chip-copy', title: tFn('copyPath'), onClick: () => copyText(f.path || '') },
             tFn('copyPath'),
           ),
         )
@@ -803,9 +827,74 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         ),
       )
     }
+    // Batch controls, shown once the dock holds more than one card: copy every
+    // settled path at once, or remove every settled card (the files stay on
+    // disk — permanent deletion remains a per-card or settings-page action).
+    // Cards still uploading are left alone so a batch never silently discards
+    // bytes; their per-card × keeps asking first.
+    const settledPaths = files.filter((f) => f.status === 'done' && f.path).map((f) => f.path as string)
+    const removable = files.filter((f) => f.status !== 'uploading' && f.status !== 'cancelling')
+    const copyAll = () => {
+      if (!settledPaths.length) return
+      copyText(settledPaths.join('\n'))
+      setCopiedAll(true)
+      setTimeout(() => setCopiedAll(false), 1600)
+    }
+    const clearSettled = () => {
+      removable.forEach((f) => removeCard(sessionId, f.id))
+      setClearArmed(false)
+    }
+    let batchBar: unknown = null
+    if (files.length > 1) {
+      const batchChildren: unknown[] = [
+        react.createElement('span', { key: 'count', className: 'dfu-dock-count' }, tf('dockCount', { n: files.length })),
+      ]
+      if (clearArmed) {
+        batchChildren.push(
+          react.createElement('span', { key: 'question', className: 'dfu-dock-question' }, tf('clearAllQuestion', { n: removable.length })),
+          react.createElement(
+            'button',
+            { key: 'confirm', type: 'button', className: 'dfu-dock-action dfu-dock-action-danger', onClick: clearSettled },
+            tFn('clearAllConfirm'),
+          ),
+          react.createElement(
+            'button',
+            { key: 'cancel', type: 'button', className: 'dfu-dock-action', onClick: () => setClearArmed(false) },
+            tFn('clearAllCancel'),
+          ),
+        )
+      } else {
+        if (settledPaths.length > 0) {
+          batchChildren.push(
+            react.createElement(
+              'button',
+              { key: 'copy', type: 'button', className: 'dfu-dock-action', onClick: copyAll },
+              copiedAll ? tf('copiedAllPaths', { n: settledPaths.length }) : tFn('copyAllPaths'),
+            ),
+          )
+        }
+        if (removable.length > 0) {
+          batchChildren.push(
+            react.createElement(
+              'button',
+              {
+                key: 'clear',
+                type: 'button',
+                className: 'dfu-dock-action dfu-dock-action-danger',
+                title: tFn('clearAllHint'),
+                onClick: () => setClearArmed(true),
+              },
+              tFn('clearAllCards'),
+            ),
+          )
+        }
+      }
+      batchBar = react.createElement('div', { className: 'dfu-dock-bar' }, batchChildren)
+    }
     return react.createElement(
       'div',
       { className: 'dfu-dock' },
+      batchBar,
       react.createElement('div', { className: 'dfu-dock-list' }, chips),
       modal,
     )
@@ -845,6 +934,28 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   flex: none;
   display: flex; flex-direction: column;
 }
+/* Batch controls above the card list: a muted file count on the left, small
+   text actions on the right. The two-step "remove all" swaps the actions for
+   a question + confirm/cancel so a batch never removes every card on one
+   stray click. */
+.dfu-dock-bar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 2px 6px;
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98);
+}
+.dfu-dock-count { margin-right: auto; }
+.dfu-dock-question { white-space: nowrap; }
+.dfu-dock-action {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dsw-alias-label-secondary, #8a8f98);
+  font-size: 12px; line-height: 1.5; padding: 2px 6px; border-radius: 6px;
+  white-space: nowrap;
+}
+.dfu-dock-action:hover {
+  color: var(--dsw-alias-brand-primary, #4d6bfe);
+  background: var(--dsw-alias-bg-layer-1, rgba(127, 127, 127, 0.12));
+}
+.dfu-dock-action-danger:hover { color: var(--dsw-alias-state-error-primary, #ef4444); }
 /* The card list scrolls instead of growing without bound and pushing the
    composer (and the conversation) up: two rows of cards fit, and any extra
    files scroll here. The cancel-confirmation dialog is a sibling, so this

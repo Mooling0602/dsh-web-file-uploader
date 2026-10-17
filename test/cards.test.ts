@@ -36,6 +36,21 @@ g.MutationObserver = class { observe() {} disconnect() {} }
 g.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0)
 g.window = globalThis
 
+// The cards copy paths through navigator.clipboard; capture the writes so the
+// batch "copy all paths" contract can be asserted.
+const copiedTexts: string[] = []
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: {
+    clipboard: {
+      writeText: (text: string) => {
+        copiedTexts.push(text)
+        return Promise.resolve()
+      },
+    },
+  },
+})
+
 const TOP = function TOP_LEVEL() {}
 
 let slotsByComp = new Map<unknown, unknown[]>()
@@ -201,6 +216,7 @@ let tree = cards()
 const startChips = byClass(tree, 'dfu-chip')
 ok('first upload renders one card', startChips.length === 1, startChips.length)
 ok('the cards live in the scrollable list', byClass(tree, 'dfu-dock-list').length === 1)
+ok('a single card shows no batch bar', byClass(tree, 'dfu-dock-bar').length === 0)
 ok('the creating card offers the copy action', byClass(tree, 'dfu-chip-copy').length === 1)
 ok('the creating card offers the trash action', byClass(tree, 'dfu-chip-delete').length === 1)
 ok('the creating card keeps the remove action', byClass(tree, 'dfu-chip-remove').length === 1)
@@ -256,6 +272,47 @@ ok('failed upload renders no trash action', byClass(tree, 'dfu-chip-delete').len
 ok('failed upload renders no hint', byClass(tree, 'dfu-chip')[0].props!.title === undefined)
 ok('failed upload keeps the remove action', byClass(tree, 'dfu-chip-remove').length === 1)
 ok('every pick reached the transport', uploads.length === 4, uploads)
+
+// ---- 5: batch controls once the dock holds more than one card --------------
+reply = { ok: true, path: '/u/one.txt', size: 12, dedup: false }
+await pick('one.txt')
+reply = { ok: true, path: '/u/two.txt', size: 12, dedup: false }
+await pick('two.txt')
+tree = cards()
+ok('two or more cards show the batch bar', byClass(tree, 'dfu-dock-bar').length === 1)
+ok('the batch bar counts every card', textOf(tree).includes('3 个文件'), textOf(tree))
+
+const findAction = (label: string): FakeNode | undefined =>
+  byClass(cards(), 'dfu-dock-action').find((node) => textOf(node) === label)
+
+const copyAllAction = findAction(dicts.zh.copyAllPaths)
+ok('the batch bar offers copy-all', copyAllAction !== undefined)
+;(copyAllAction!.props!.onClick as () => void)()
+ok('copy-all copies every settled path', copiedTexts[0] === '/u/one.txt\n/u/two.txt', copiedTexts)
+ok('copy-all acknowledges the copy', textOf(cards()).includes('已复制 2 条路径'), textOf(cards()))
+
+const removeAllAction = findAction(dicts.zh.clearAllCards)
+ok('the batch bar offers remove-all', removeAllAction !== undefined)
+;(removeAllAction!.props!.onClick as () => void)()
+tree = cards()
+ok('remove-all asks before removing', textOf(tree).includes(dicts.zh.clearAllConfirm), textOf(tree))
+ok('remove-all names the card count', textOf(tree).includes('3 个卡片？'), textOf(tree))
+const cancelRemoveAction = findAction(dicts.zh.clearAllCancel)
+ok('remove-all can be cancelled', cancelRemoveAction !== undefined)
+;(cancelRemoveAction!.props!.onClick as () => void)()
+tree = cards()
+ok('cancel restores the batch actions', textOf(tree).includes(dicts.zh.clearAllCards), textOf(tree))
+
+;(findAction(dicts.zh.clearAllCards)!.props!.onClick as () => void)()
+;(findAction(dicts.zh.clearAllConfirm)!.props!.onClick as () => void)()
+tree = cards()
+ok('remove-all drops every card', byClass(tree, 'dfu-chip').length === 0, byClass(tree, 'dfu-chip').length)
+ok(
+  'remove-all un-references each stored path',
+  ['/u/one.txt', '/u/two.txt'].every((path) => removes.some((r) => r.path === path)),
+  removes,
+)
+ok('the batch bar disappears with the cards', tree === null, tree)
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
