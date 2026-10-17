@@ -13,6 +13,14 @@
     "attachment"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mooling0602/dsh-web-file-uploader.git"
+  },
+  "homepage": "https://github.com/Mooling0602/dsh-web-file-uploader#readme",
+  "bugs": {
+    "url": "https://github.com/Mooling0602/dsh-web-file-uploader/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
