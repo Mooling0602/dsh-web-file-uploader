@@ -12,6 +12,40 @@ export interface PluginContext {
   get<T>(name: string): T | undefined
   effect(fn: () => unknown, key?: string): void
   on(event: string, handler: (payload: unknown, next: () => unknown) => unknown): void
+  /**
+   * Run a callback once the named services are available, disposing it — and
+   * whatever it returned — when they go away. Optional: a stub context used by
+   * the browser-free suites may omit it.
+   */
+  inject?(deps: readonly string[], callback: (scope: PluginContext) => unknown): unknown
+}
+
+/** One row the shell's slash/add command menu renders for a candidate. */
+export interface CommandMenuCandidate {
+  name: string
+  label?: string
+  description?: string
+  icon?: unknown
+  /** Section heading the row falls under; absent for a typed (ranked) query. */
+  section?: string
+}
+
+/** One client command contribution registered with the shell's command UI. */
+export interface CommandContribution {
+  /** Command name without the leading slash (the row's display alias). */
+  name: string
+  label?(): string
+  description?(): string
+  icon?: unknown
+  available(session: unknown): boolean
+  ui: { kind: 'action'; run(session: unknown): void }
+}
+
+/** The client command registry (`ctx.commandUi`) surface this plugin uses. */
+export interface CommandUiService {
+  register(contribution: CommandContribution): () => void
+  /** Candidate synthesis of the '/' source; patched to re-place the file row. */
+  candidates?(session: unknown, req: unknown): Promise<readonly CommandMenuCandidate[]>
 }
 
 /** The webServer service: register HTTP routes on the dsh web app. */

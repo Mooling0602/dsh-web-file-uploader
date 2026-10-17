@@ -115,14 +115,23 @@ const locale = {
 }
 
 let listResult: FilesListResult | null = { ok: true, files: [], ttl: 604800000, now: Date.now() }
+let savedConfig: Record<string, unknown> | null = null
 
 const core = createClientCore({
   react,
   upload: async () => ({ ok: true }),
   remove: async () => ({ ok: true }),
   delete: async () => ({ ok: true }),
-  configGet: async () => ({ ttl: '7d', replaceOfficial: false }),
-  configSet: async () => ({ ok: true, ttl: '7d', replaceOfficial: false }),
+  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true }),
+  configSet: async (cfg) => {
+    savedConfig = cfg as Record<string, unknown>
+    return {
+      ok: true,
+      ttl: String(cfg.ttl ?? ''),
+      replaceOfficial: cfg.replaceOfficial === true,
+      alwaysShowButton: cfg.alwaysShowButton !== false,
+    }
+  },
   filesList: async () => listResult,
   deleteMany: async (args) => ({ ok: true, removed: args.paths.length, skipped: 0, failed: 0 }),
   insertStyles: () => {},
@@ -257,6 +266,27 @@ listResult = { ok: true, files: [
 tree = await mount()
 ok('notice disappears once released', byClass(tree, 'dfu-manage-notice').length === 0)
 ok('row becomes selectable again', byClass(tree, 'dfu-manage-row-locked').length === 0)
+
+// ---- upload-entry switches ----
+tree = await mount()
+const switches = () => byClass(tree, 'dfu-switch')
+ok('two upload-entry switches render', switches().length === 2, switches().length)
+ok('replace switch is labelled for the add-file entry',
+  byClass(tree, 'dfu-settings-toggle-label').some(n => textOf(n) === dicts.zh.replaceOfficial),
+  byClass(tree, 'dfu-settings-toggle-label').map(textOf))
+const alwaysSwitch = switches().find(s => s.props!['aria-label'] === dicts.zh.alwaysShowButton)
+ok('always-show switch exists', alwaysSwitch !== undefined)
+ok('always-show switch defaults on', alwaysSwitch?.props!['aria-checked'] === true, alwaysSwitch?.props!['aria-checked'])
+;(alwaysSwitch!.props!.onClick as () => void)()
+tree = draw()
+const toggled = switches().find(s => s.props!['aria-label'] === dicts.zh.alwaysShowButton)
+ok('always-show switch toggles off', toggled?.props!['aria-checked'] === false, toggled?.props!['aria-checked'])
+const saveBtn = byClass(tree, 'dfu-settings-save').find(n => n.props!.className === 'dfu-settings-save')
+ok('save button exists', saveBtn !== undefined)
+;(saveBtn!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('save sends the always-show setting', (savedConfig as Record<string, unknown> | null)?.alwaysShowButton === false, savedConfig)
+ok('save keeps the replacement setting', (savedConfig as Record<string, unknown> | null)?.replaceOfficial === false, savedConfig)
 
 // ---- i18n contract ----
 ok('zh carries manageInUseNotice', typeof dicts.zh.manageInUseNotice === 'string' && dicts.zh.manageInUseNotice.length > 0)

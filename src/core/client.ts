@@ -8,7 +8,7 @@
 //   upload(args)       Promise<result>   { sessionId, name, mime, file }
 //   remove(args)       Promise<void>     { sessionId, path }
 //   delete(args)       Promise<void>     { sessionId, path }
-//   configGet()        Promise<config>   { ttl, replaceOfficial }
+//   configGet()        Promise<config>   { ttl, replaceOfficial, alwaysShowButton }
 //   configSet(cfg)     Promise<config>
 //   filesList()        Promise<{ files }>          settings-panel inventory
 //   deleteMany(args)   Promise<result>   { sessionId, paths }
@@ -21,7 +21,7 @@
 // verbatim into the loader factory. Only `export function createClientCore` is
 // used.
 
-import type { PluginContext } from '../types.js'
+import type { CommandMenuCandidate, CommandUiService, PluginContext } from '../types.js'
 
 /** The React surface this core uses — a structural subset. The build wrapper
  *  injects the real namespace through `require("react")`; the standalone
@@ -91,6 +91,7 @@ export interface PathArgs {
 export interface DfuConfig {
   ttl?: string
   replaceOfficial?: boolean
+  alwaysShowButton?: boolean
 }
 
 /** One row of the settings "manage files" inventory (mirrors the host core). */
@@ -187,10 +188,13 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       ttlLabel: '自动清理保留期',
       ttlHint: '支持 1s / 1m / 1h / 1d，输入 0 表示永不清理。超过保留期且未被引用的文件会被自动清除。',
       save: '保存',
-      replaceOfficial: '替代官方附件按钮',
-      replaceHint: '开启后隐藏官方按钮，本插件按钮移到它的位置上，输入框左侧只保留一个上传入口。',
-      replaceScope: '上传、进度与自动清理仍由本插件负责；保存后立即生效，无需刷新。',
-      replaceRestore: '关闭开关并保存即可恢复官方按钮；停用或卸载插件时也会自动恢复。',
+      replaceOfficial: '替代官方添加文件入口',
+      replaceHint: '开启后隐藏官方「添加 → 文件」入口，在原位置换成插件自己的入口：斜向回形针图标，文字仍是「文件」，命令名改为 attach-file。',
+      replaceScope: '该入口与本插件共用同一套上传流程；上传、进度与自动清理仍由本插件负责。保存后立即生效，无需刷新。',
+      replaceRestore: '关闭开关并保存即可恢复官方入口；停用或卸载插件时也会自动恢复。',
+      alwaysShowButton: '始终显示单独的附件上传按钮',
+      alwaysShowHint: '开启时输入框旁始终显示本插件按钮。关闭后，若同时开启「替代官方添加文件入口」，输入框旁不再显示按钮，上传入口只保留在菜单里；未开启替代时按钮仍会显示，避免无处上传。',
+      menuFileLabel: '文件',
       cancelling: '正在取消…',
       cancelTitle: '取消上传？',
       cancelBody: '这个文件还在上传中。取消会立刻中断传输，并丢弃已经发送的部分；返回则继续上传，文件照常保存。',
@@ -232,10 +236,13 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       ttlLabel: 'Auto-cleanup retention',
       ttlHint: 'Use 1s / 1m / 1h / 1d; enter 0 to never clean. Files past the retention that are no longer referenced are removed automatically.',
       save: 'Save',
-      replaceOfficial: 'Replace the official attach button',
-      replaceHint: 'Hides the official button and moves this plugin’s button into its place, so the composer keeps a single upload control.',
-      replaceScope: 'Uploading, progress and auto-cleanup still come from this plugin; saving applies at once, no refresh needed.',
-      replaceRestore: 'Turning the switch off and saving brings the official button back; disabling or removing the plugin restores it too.',
+      replaceOfficial: 'Replace the official add-file entry',
+      replaceHint: 'Hides the official Add → File entry and puts this plugin’s own entry in its place: the angled paperclip icon, the same “File” text, and the command name attach-file.',
+      replaceScope: 'That entry feeds this plugin’s upload flow; uploading, progress and auto-cleanup still come from this plugin. Saving applies at once, no refresh needed.',
+      replaceRestore: 'Turning the switch off and saving brings the official entry back; disabling or removing the plugin restores it too.',
+      alwaysShowButton: 'Always show the standalone attach button',
+      alwaysShowHint: 'On shows this plugin’s button beside the input box at all times. Off hides it whenever “Replace the official add-file entry” is on, leaving the menu as the only upload entry; with replacement off the button still shows so an entry always exists.',
+      menuFileLabel: 'File',
       cancelling: 'Cancelling…',
       cancelTitle: 'Cancel this upload?',
       cancelBody: 'This file is still uploading. Cancelling stops the transfer now and throws away what has been sent; going back keeps uploading and saves the file as usual.',
@@ -453,11 +460,75 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     store.remove(sessionId, id)
   }
 
+  // --- add-menu entry -------------------------------------------------------
+
+  // The shell's add (+) button and its '/' command menu are one popup: both
+  // open the same `command` trigger source, whose empty-query "Add" section
+  // carries the built-in `file` row (client contribution registered by
+  // ui-conversation, action `inputHub.pickFiles`). Replacing that entry means
+  // swapping the command candidate itself, because the menu is React-rendered
+  // from the candidate list — hiding a row in the DOM would leave keyboard
+  // navigation and the pick dispatch pointing at the official action.
+  const ATTACH_FILE_COMMAND = 'attach-file'
+
+  // File inputs of the mounted composer buttons, keyed by session. The menu
+  // action has to open the very picker the button opens, and the button is
+  // detached (not unmounted) when the standalone entry is switched off, so the
+  // input keeps living here.
+  const pickerInputs = new Map<string, HTMLInputElement>()
+
+  /** The menu row glyph: the same angled paperclip the composer button draws. */
+  function AttachMenuIcon(props: { size?: number }) {
+    const size = typeof props?.size === 'number' ? props.size : 14
+    return react.createElement(
+      'svg',
+      {
+        width: size,
+        height: size,
+        viewBox: PAPERCLIP_VIEW_BOX,
+        fill: 'none',
+        'aria-hidden': 'true',
+      },
+      react.createElement('path', {
+        d: PAPERCLIP_PATH,
+        fill: 'currentColor',
+        transform: PAPERCLIP_TRANSFORM,
+      }),
+    )
+  }
+
+  /**
+   * Open this plugin's file picker for one session: the menu row and the
+   * composer button end in the same input, so both go through one upload path.
+   * @param session - session context passed to the command action.
+   */
+  function openPluginPicker(session: unknown) {
+    const sessionId = sessionIdOf(session)
+    let input: HTMLInputElement | null | undefined = sessionId === undefined ? undefined : pickerInputs.get(sessionId)
+    if (input === undefined) {
+      pickerInputs.forEach((candidate) => {
+        if (input === undefined) input = candidate
+      })
+    }
+    if (input === undefined && typeof document !== 'undefined') {
+      input = document.querySelector('.dfu-attach input[type="file"]') as HTMLInputElement | null
+    }
+    if (input !== undefined && input !== null && typeof input.click === 'function') input.click()
+  }
+
   // --- components -----------------------------------------------------------
 
   function AttachButton(props: unknown) {
     useStoreVersion()
     const sessionId = sessionIdOf(props)
+    const pickerKey = sessionId ?? ''
+    const registerPicker = (el: HTMLInputElement | null) => {
+      if (el === null) {
+        pickerInputs.delete(pickerKey)
+        return
+      }
+      pickerInputs.set(pickerKey, el)
+    }
     const onPick = (event: Event) => {
       const input = event.target as HTMLInputElement
       const files = Array.from(input.files || [])
@@ -542,7 +613,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     return react.createElement(
       'label',
       { className: 'dfu-attach', title: tFn('attachTitle') },
-      react.createElement('input', { type: 'file', multiple: true, style: { display: 'none' }, onChange: onPick }),
+      react.createElement('input', { type: 'file', multiple: true, style: { display: 'none' }, onChange: onPick, ref: registerPicker }),
       react.createElement(
         'svg',
         {
@@ -731,6 +802,17 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
 }
 .dfu-attach:hover {
   background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127, 127, 127, .18));
+}
+/* Standalone button detached: the add-menu entry is the upload entry, so the
+   composer button keeps its input mounted (the menu action clicks it) but
+   takes no space in the tool row. Absolute, not display:none — the programmatic
+   picker click must stay possible on a control that left the flow. */
+.dfu-attach[data-dfu-detached] {
+  position: absolute;
+  width: 0; height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 .dfu-dock {
   box-sizing: border-box;
@@ -963,6 +1045,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     useStoreVersion()
     const [ttl, setTtl] = react.useState('')
     const [replaceOn, setReplaceOn] = react.useState(false)
+    const [alwaysShowOn, setAlwaysShowOn] = react.useState(true)
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
     react.useEffect(() => {
       let alive = true
@@ -972,6 +1055,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
             if (!alive || !r) return
             if (r.ttl != null) setTtl(String(r.ttl))
             setReplaceOn(r.replaceOfficial === true)
+            setAlwaysShowOn(r.alwaysShowButton !== false)
           })
           .catch(() => {})
       }
@@ -980,17 +1064,23 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const save = () => {
       if (typeof configSet !== 'function') return
       setStatus('saving')
-      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn })
+      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn, alwaysShowButton: alwaysShowOn })
         .then((r) => {
           if (r && r.ok === false) {
             setStatus('error')
             return
           }
           if (r && r.ttl != null) setTtl(String(r.ttl))
-          if (r && typeof r.replaceOfficial === 'boolean') setReplaceOn(r.replaceOfficial)
-          // Settings can be open with the composer unmounted, so the saved value
-          // is applied to whatever is on screen now and to the next mount.
-          applyReplaceOfficial(r !== null && typeof r === 'object' && r.replaceOfficial === true)
+          // Echo wins when the host knows the field; an older host that does not
+          // still keeps the requested values, so saving never flips the switch
+          // back on screen.
+          const nextReplace = r && typeof r.replaceOfficial === 'boolean' ? r.replaceOfficial : replaceOn
+          const nextAlwaysShow = r && typeof r.alwaysShowButton === 'boolean' ? r.alwaysShowButton : alwaysShowOn
+          setReplaceOn(nextReplace)
+          setAlwaysShowOn(nextAlwaysShow)
+          // Settings can be open with the composer unmounted, so the saved values
+          // are applied to whatever is on screen now and to the next mount.
+          applyUploadEntrySettings(nextReplace, nextAlwaysShow)
           setStatus('saved')
         })
         .catch(() => setStatus('error'))
@@ -1020,6 +1110,24 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceHint')),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceScope')),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('replaceRestore')),
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-toggle' },
+        react.createElement('span', { className: 'dfu-settings-toggle-label' }, tFn('alwaysShowButton')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': alwaysShowOn,
+            'aria-label': tFn('alwaysShowButton'),
+            className: 'dfu-switch',
+            onClick: () => setAlwaysShowOn(!alwaysShowOn),
+          },
+          react.createElement('span', { className: 'dfu-switch-thumb' }),
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('alwaysShowHint')),
       react.createElement(
         'div',
         { className: 'dfu-settings-row' },
@@ -1387,40 +1495,35 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
 
   // --- composer placement ---------------------------------------------------
 
-  // The shell draws the composer tools as one flex row, and this plugin's
-  // button arrives through its last slot:
+  // The shell draws the composer tools as one flex row and renders this
+  // plugin's slot last:
   //
-  //   older shells:   [+ menu] [official attach] [file input] [mode chips]  [slot: left]
-  //   current shell:  [+ add menu]               [file input] [perm/plan chips] [slot: left]
+  //   [+ add menu] [file input] [permission/plan chips] [slot: left]
   //
-  // DSH moved the official upload into the add menu, so the button belongs
-  // directly right of the add button — not at the far end of the row where the
-  // slot renders it and not hidden behind the permission chips. Placement is
-  // flex `order` on the items of that row, which touches no node React owns:
+  // so the button is re-ordered to sit directly right of the add button, in
+  // front of the mode chips. It is flex `order` on the row's items — no node
+  // React owns is moved:
   //
-  //   - our button orders itself right after the control the shell uses for its
-  //     composer actions: its official paperclip when the shell still draws
-  //     one, otherwise the first tool control (the add button that absorbed the
-  //     upload action). The shell's slot wrapper is `display: contents`, so our
-  //     label is itself a flex item of the row;
+  //   - our button orders itself right after the first tool control (the add
+  //     button); the shell's slot wrapper is `display: contents`, so the label
+  //     is itself a flex item of the row;
   //   - everything the shell draws after that control follows ours with a
   //     higher `order`, keeping its own sequence;
-  //   - when the user asks for it, the official button is hidden so the row
-  //     keeps exactly one upload control and ours stands in its place.
+  //   - when the standalone button is switched off while the add-menu entry is
+  //     replaced, the label is detached: out of the flex flow, still mounted so
+  //     the menu action can click its file input.
   //
   // Every write records the value it replaced in a marker attribute, so a
-  // switch-off, a plugin unload, or the next mount can put the shell back
-  // exactly as it was drawn. On a shell that does not match, all of it is a
-  // no-op: our button simply stays in its slot.
-  const ATTACH_GLYPH_PREFIX = 'M5.5498' // shell paperclip (ic_ds_paperclip_outline_16)
+  // switch-off or a plugin unload can put the shell back exactly as it was
+  // drawn.
   const SLOT_ANCHOR = '[data-slot="conversation.input.left"]'
   const ORDER_ATTR = 'data-dfu-order'
-  const HIDDEN_ATTR = 'data-dfu-hidden'
+  const DETACHED_ATTR = 'data-dfu-detached'
   const OUR_ORDER = '1'
   const AFTER_ORDER = '2'
 
   let replaceOfficial = false
-  let warnedMissingAttach = false
+  let alwaysShowButton = true
 
   /** Set (null clears) our flex order, remembering the inline value replaced. */
   function applyOrder(el: HTMLElement, order: string | null) {
@@ -1436,75 +1539,35 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     el.style.order = order
   }
 
-  /** Hide or restore the shell's attach button, remembering its inline display. */
-  function applyHidden(el: HTMLElement, hidden: boolean) {
-    if (hidden) {
-      if (el.hasAttribute(HIDDEN_ATTR)) return
-      el.setAttribute(HIDDEN_ATTR, el.style.display || '')
-      el.style.display = 'none'
+  /** Detach or re-attach the standalone button; the CSS keys off the marker. */
+  function applyDetached(el: HTMLElement, detached: boolean) {
+    if (detached) {
+      if (!el.hasAttribute(DETACHED_ATTR)) el.setAttribute(DETACHED_ATTR, '')
       return
     }
-    const previous = el.getAttribute(HIDDEN_ATTR)
-    if (previous === null) return
-    el.style.display = previous
-    el.removeAttribute(HIDDEN_ATTR)
+    if (el.hasAttribute(DETACHED_ATTR)) el.removeAttribute(DETACHED_ATTR)
   }
 
   /**
-   * The direct child of the row that carries a control the shell may wrap.
-   * @param control - control inside the row.
-   * @param row - the flex row that lays the control out.
-   * @returns that row's child, or null when the control is not inside the row.
-   */
-  function flexItemOf(control: HTMLElement, row: HTMLElement): HTMLElement | null {
-    let item: HTMLElement | null = control
-    while (item !== null && item.parentElement !== row) item = item.parentElement
-    return item
-  }
-
-  /**
-   * The shell's attach button inside one tools row: the paperclip glyph, never
-   * the settings-nav mark (which reuses the same glyph).
-   * @returns the button, or null when this row is not the shell's composer.
-   */
-  function findAttachButton(row: HTMLElement): HTMLElement | null {
-    const buttons = row.querySelectorAll('button')
-    for (let i = 0; i < buttons.length; i += 1) {
-      const button = buttons[i]
-      if (button.querySelector('[data-dfu-mark]') !== null) continue
-      const path = button.querySelector('svg path')
-      if (path === null) continue
-      const d = path.getAttribute('d')
-      if (typeof d === 'string' && d.indexOf(ATTACH_GLYPH_PREFIX) === 0) return button as HTMLElement
-    }
-    return null
-  }
-
-  /** The flex item this plugin contributes: the slot outlet is `display: contents`. */
-  function ourComposerItem(anchor: HTMLElement): HTMLElement {
-    const label = anchor.querySelector('.dfu-attach')
-    return label === null ? anchor : label as HTMLElement
-  }
-
-  /**
-   * Place this plugin's button in one composer row, directly after the control
-   * the shell uses for its own composer actions.
+   * Place this plugin's button in one composer row, directly after the add
+   * button.
    * @param anchor - this plugin's slot outlet inside the row.
-   * @returns the row and the official attach button it was placed against (null
-   * on a shell without one), or null when the row cannot be recognised.
+   * @returns the row the button was placed in, or null when it has none.
    */
-  function layoutComposer(anchor: HTMLElement): { row: HTMLElement; attach: HTMLElement | null } | null {
+  function layoutComposer(anchor: HTMLElement): HTMLElement | null {
     const row = anchor.parentElement
     if (row === null) return null
-    // Sit right after the shell's own attach button while it still draws one;
-    // the current shell folded the upload into its first tool control (the add
-    // menu button), which is then the control to follow.
-    const attach = findAttachButton(row)
-    const behind = attach === null ? row.firstElementChild : flexItemOf(attach, row)
+    const behind = row.firstElementChild
     if (behind === null) return null
+    const label = anchor.querySelector('.dfu-attach') as HTMLElement | null
+    const item = label === null ? anchor : label
     applyOrder(anchor, OUR_ORDER)
-    applyOrder(ourComposerItem(anchor), OUR_ORDER)
-    // Everything the shell draws after that control follows ours; the controls
+    applyOrder(item, OUR_ORDER)
+    // The detached button leaves the flow, so its order stops mattering: the
+    // add-menu entry is the upload entry while `alwaysShowButton` is off and the
+    // official entry is replaced.
+    applyDetached(item, label !== null && !alwaysShowButton && replaceOfficial)
+    // Everything the shell draws after the add button follows ours; the controls
     // before it keep the default order, so the row's sequence is preserved.
     let passed = false
     const children = row.children
@@ -1516,8 +1579,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       }
       if (child !== anchor) applyOrder(child, AFTER_ORDER)
     }
-    if (attach !== null) applyHidden(attach, replaceOfficial)
-    return { row, attach }
+    return row
   }
 
   // The row already laid out, so the steady state costs a few property reads
@@ -1534,22 +1596,9 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     }
     laidOut = null
     const anchors = document.querySelectorAll<HTMLElement>(SLOT_ANCHOR)
-    let sawAttach = false
     for (let i = 0; i < anchors.length; i += 1) {
-      const anchor = anchors[i]
-      const placed = layoutComposer(anchor)
-      if (placed === null) continue
-      sawAttach = sawAttach || placed.attach !== null
-      laidOut = { row: placed.row, anchor: anchor }
-    }
-    if (laidOut !== null && !sawAttach && replaceOfficial && !warnedMissingAttach) {
-      // The current shell folded the official upload into the add menu, so the
-      // replace-official switch has nothing left to replace; our button sits
-      // next to the add button either way.
-      warnedMissingAttach = true
-      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-        console.warn('[dsh-web-file-uploader] the shell no longer draws an official attach button; the replace-official switch has no effect')
-      }
+      const row = layoutComposer(anchors[i])
+      if (row !== null) laidOut = { row, anchor: anchors[i] }
     }
   }
 
@@ -1557,24 +1606,88 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   function restoreComposerLayout() {
     if (typeof document === 'undefined') return
     laidOut = null
-    const marked = document.querySelectorAll<HTMLElement>('[' + ORDER_ATTR + '], [' + HIDDEN_ATTR + ']')
+    const marked = document.querySelectorAll<HTMLElement>('[' + ORDER_ATTR + '], [' + DETACHED_ATTR + ']')
     for (let i = 0; i < marked.length; i += 1) {
       applyOrder(marked[i], null)
-      applyHidden(marked[i], false)
+      applyDetached(marked[i], false)
     }
   }
 
-  function applyReplaceOfficial(next: boolean) {
-    const value = next === true
-    if (value === replaceOfficial) return
-    replaceOfficial = value
+  // --- add-menu entry replacement -------------------------------------------
+
+  /**
+   * Swap the shell's `file` candidate for this plugin's row. Both the add (+)
+   * button and the slash menu render the same command source, so the swap
+   * covers both entries; the plugin row keeps the official row's section (the
+   * "Add" heading) and therefore its place in the list.
+   * @param rows - candidates the shell's command source produced.
+   * @returns the rows with the plugin row standing where `file` was.
+   */
+  function replaceFileCandidate(rows: readonly CommandMenuCandidate[]): readonly CommandMenuCandidate[] {
+    if (!replaceOfficial) return rows
+    let ours: CommandMenuCandidate | undefined
+    for (const row of rows) {
+      if (row.name === ATTACH_FILE_COMMAND) ours = row
+    }
+    if (ours === undefined) return rows
+    let swapped = false
+    const out: CommandMenuCandidate[] = []
+    for (const row of rows) {
+      if (row.name === 'file') {
+        swapped = true
+        out.push({ ...ours, ...(row.section === undefined ? {} : { section: row.section }) })
+        continue
+      }
+      if (row.name === ATTACH_FILE_COMMAND) continue
+      out.push(row)
+    }
+    // No official row means the shell offers no file entry right now (a locked
+    // or attachment-less session), so leaving ours behind would be wrong.
+    return swapped ? out : rows.filter(row => row.name !== ATTACH_FILE_COMMAND)
+  }
+
+  /**
+   * Patch the shell's command source so the official `file` row becomes this
+   * plugin's `attach-file` row. The row action opens the very picker the
+   * composer button opens, so both entries share one upload path.
+   */
+  function installCommandEntry(ctx: PluginContext) {
+    if (typeof ctx.inject !== 'function') return
+    ctx.inject(['commandUi'], (scope) => {
+      const commandUi = scope.get<CommandUiService>('commandUi')
+      if (commandUi === undefined || typeof commandUi.register !== 'function') return
+      const original = commandUi.candidates
+      if (typeof original !== 'function') return
+      const patched = (session: unknown, req: unknown) =>
+        original.call(commandUi, session, req).then(replaceFileCandidate)
+      commandUi.candidates = patched
+      scope.effect(() => {
+        const dispose = commandUi.register({
+          name: ATTACH_FILE_COMMAND,
+          label: () => tFn('menuFileLabel'),
+          icon: AttachMenuIcon,
+          available: () => replaceOfficial,
+          ui: { kind: 'action', run: session => openPluginPicker(session) },
+        })
+        return () => {
+          dispose()
+          if (commandUi.candidates === patched) commandUi.candidates = original
+        }
+      }, 'dfu: add-menu file entry')
+    })
+  }
+
+  /** Apply the settings that decide where the upload entry lives. */
+  function applyUploadEntrySettings(nextReplace: boolean, nextAlwaysShow: boolean) {
+    replaceOfficial = nextReplace === true
+    alwaysShowButton = nextAlwaysShow !== false
     applyComposerLayout()
   }
 
   function installComposerLayout() {
     if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
-    // An instance disabled while it was replacing the official button leaves its
-    // markers behind; undo them before deciding anything.
+    // An instance disabled while it had rewritten the row leaves its markers
+    // behind; undo them before deciding anything.
     restoreComposerLayout()
     applyComposerLayout()
     let scheduled = false
@@ -1615,8 +1728,9 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     insertStyles(CSS)
     const teardownNavMark = installSettingsNavMark()
     installComposerLayout()
+    installCommandEntry(ctx)
     if (typeof ctx.effect === 'function') {
-      // Disabling or unloading the plugin hands the official button back.
+      // Disabling or unloading the plugin hands the shell its composer back.
       ctx.effect(() => restoreComposerLayout, 'dfu: composer attach placement')
       // ...and the settings row its own gear.
       if (typeof teardownNavMark === 'function') {
@@ -1626,7 +1740,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     if (typeof configGet === 'function') {
       configGet()
         .then((cfg) => {
-          if (cfg) applyReplaceOfficial(cfg.replaceOfficial === true)
+          if (cfg) applyUploadEntrySettings(cfg.replaceOfficial === true, cfg.alwaysShowButton !== false)
         })
         .catch(() => {})
     }

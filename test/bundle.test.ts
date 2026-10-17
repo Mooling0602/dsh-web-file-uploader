@@ -73,14 +73,47 @@ ok('apply is exported', typeof exported.apply === 'function')
 const registered: Record<string, any> = {}
 const slots = { inject: (_name: string, fn: () => void) => fn(), register: (meta: any) => { registered[meta.id] = meta } }
 const dicts: Record<string, any> = {}
-const locale = { register: (_namespace: string, lang: string, dict: any) => { dicts[lang] = dict }, bind: () => (key: string) => key }
+const locale = {
+  register: (_namespace: string, lang: string, dict: any) => { dicts[lang] = dict },
+  bind: () => (key: string) => (dicts.zh && typeof dicts.zh[key] === 'string' ? dicts.zh[key] : key),
+}
+
+// The command registry the add menu and the slash menu share. `candidates` is
+// the source's synthesis: the patch under test swaps the shell's `file` row for
+// the plugin's `attach-file` row, keeping the row's place in the list.
+const contributions: any[] = []
+const shellRows: any[] = [
+  { name: 'file', label: '文件', section: '添加' },
+  { name: 'goal', label: '目标', section: '添加' },
+  { name: 'attach-file', label: '文件', section: '指令' },
+]
+const commandUi: { candidates: (...args: any[]) => Promise<readonly any[]>; register: (contribution: any) => () => void } = {
+  candidates: async () => shellRows,
+  register: (contribution: any) => { contributions.push(contribution); return () => {} },
+}
+const cleanups: (() => void)[] = []
+// Settings load: the seam reads config from the host route, so answer it here
+// to land on the replace-official / always-show settings under test.
+Object.assign(globalThis, {
+  fetch: async () => ({ json: async () => ({ ttl: '7d', replaceOfficial: true, alwaysShowButton: true }) }),
+})
+const ctx = {
+  get: (name: string) => (name === 'slots' ? slots : name === 'locale' ? locale : name === 'commandUi' ? commandUi : undefined),
+  effect: (fn: () => unknown) => { const out = fn(); if (typeof out === 'function') cleanups.push(out as () => void) },
+  on: () => {},
+  inject: (deps: readonly string[], callback: (scope: unknown) => void) => {
+    if (deps.includes('commandUi')) callback(ctx)
+  },
+}
 let applyError: string | null = null
 try {
-  exported.apply({ get: (name: string) => (name === 'slots' ? slots : name === 'locale' ? locale : undefined) })
+  exported.apply(ctx)
 } catch (error) {
   applyError = error instanceof Error ? error.message : String(error)
 }
 ok('apply runs without throwing', applyError === null, applyError)
+// The settings promise resolves on the next microtask; let it settle first.
+await new Promise(resolve => setTimeout(resolve, 0))
 
 const ids = Object.keys(registered)
 ok('settings section registered', ids.includes('dfu-settings'), ids)
@@ -90,6 +123,21 @@ ok('zh dictionary registered', !!dicts.zh && typeof dicts.zh.attachTitle === 'st
 ok('en dictionary registered', !!dicts.en && typeof dicts.en.attachTitle === 'string', dicts.en && Object.keys(dicts.en).length)
 ok('zh and en carry the same keys',
   !!dicts.zh && !!dicts.en && JSON.stringify(Object.keys(dicts.zh).sort()) === JSON.stringify(Object.keys(dicts.en).sort()))
+
+// --- add-menu entry replacement ----------------------------------------------
+
+ok('one command contribution registered', contributions.length === 1, contributions.length)
+const contribution = contributions[0] ?? {}
+ok('contribution is the attach-file command', contribution.name === 'attach-file', contribution.name)
+ok('contribution label is the file text', contribution.label?.() === '文件', contribution.label?.())
+ok('contribution carries the paperclip icon', typeof contribution.icon === 'function')
+ok('contribution is available while the replacement switch is on', contribution.available?.({}) === true)
+
+const swapped = await commandUi.candidates({ sessionId: 's1' }, { query: '', position: 'leading' })
+ok('file row replaced by attach-file', swapped.map((row: any) => row.name).join(',') === 'attach-file,goal', swapped.map((row: any) => row.name))
+ok('replacement keeps the shell row label', swapped[0]?.label === '文件', swapped[0]?.label)
+ok('replacement keeps the Add section heading', swapped[0]?.section === '添加', swapped[0]?.section)
+ok('shell rows are otherwise untouched', swapped[1]?.section === '添加')
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

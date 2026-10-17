@@ -59,10 +59,11 @@ export function apply(ctx: PluginContext): void {
   if (webServer === undefined) return
 
   // Resolve the plugin config: persisted file > env > default.
-  //   ttl             auto-cleanup retention
-  //   replaceOfficial hide the shell's composer attach button and move ours
-  //                   into its place (see src/core/client.ts)
-  let runtimeConfig = { ttl: '7d', replaceOfficial: false }
+  //   ttl              auto-cleanup retention
+  //   replaceOfficial  replace the shell's "Add -> File" menu entry with ours
+  //   alwaysShowButton keep the standalone composer button visible at all times
+  //                    (see src/core/client.ts)
+  let runtimeConfig = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true }
   const readConfigFile = (): Record<string, unknown> | null => {
     try {
       const text = existsSync(configPath()) ? readFileSync(configPath(), 'utf8') : ''
@@ -73,7 +74,7 @@ export function apply(ctx: PluginContext): void {
     }
     return null
   }
-  const getConfig = (): { ttl: string; replaceOfficial: boolean } => {
+  const getConfig = (): { ttl: string; replaceOfficial: boolean; alwaysShowButton: boolean } => {
     const fromFile = readConfigFile()
     let ttl = fromFile && typeof fromFile.ttl === 'string' && fromFile.ttl !== '' ? fromFile.ttl : undefined
     if (ttl === undefined && process.env && process.env.DSH_UPLOAD_TTL) ttl = process.env.DSH_UPLOAD_TTL
@@ -81,14 +82,18 @@ export function apply(ctx: PluginContext): void {
     const replaceOfficial = fromFile && typeof fromFile.replaceOfficial === 'boolean'
       ? fromFile.replaceOfficial
       : runtimeConfig.replaceOfficial
-    return { ttl, replaceOfficial }
+    const alwaysShowButton = fromFile && typeof fromFile.alwaysShowButton === 'boolean'
+      ? fromFile.alwaysShowButton
+      : runtimeConfig.alwaysShowButton
+    return { ttl, replaceOfficial, alwaysShowButton }
   }
   // Partial update: a caller that only knows about one field must not clear the
   // other, so the patch is merged over the resolved config.
-  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean }): void => {
+  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean }): void => {
     const next = getConfig()
     if (patch && patch.ttl != null) next.ttl = String(patch.ttl).trim()
     if (patch && typeof patch.replaceOfficial === 'boolean') next.replaceOfficial = patch.replaceOfficial
+    if (patch && typeof patch.alwaysShowButton === 'boolean') next.alwaysShowButton = patch.alwaysShowButton
     runtimeConfig = next
     try {
       // A fresh DSH_HOME may not exist yet; the write is the only thing that
@@ -377,9 +382,10 @@ export function apply(ctx: PluginContext): void {
           } catch {
             parsed = {}
           }
-          const patch: { ttl?: string; replaceOfficial?: boolean } = {}
+          const patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean } = {}
           if (parsed.ttl != null) patch.ttl = String(parsed.ttl)
           if (typeof parsed.replaceOfficial === 'boolean') patch.replaceOfficial = parsed.replaceOfficial
+          if (typeof parsed.alwaysShowButton === 'boolean') patch.alwaysShowButton = parsed.alwaysShowButton
           setConfig(patch)
           sendJson(res, 200, getConfig())
           return
