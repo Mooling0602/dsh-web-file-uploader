@@ -151,6 +151,10 @@ writes it. Agents must not invent release entries:
 - Before committing, re-read the staged diff and confirm the commit type is
   accurate (see [Commit types](#commit-types)): correct the type, or split the
   commit, when it is not.
+- Fix a commit that has not been pushed in place: `git commit --amend` (or a
+  local rebase) may correct its message or content, and the type must be
+  re-checked after the amend. Once a commit is on `origin`, leave it alone —
+  never force-push or otherwise rewrite pushed history.
 - Do not add secrets, tokens, or personal absolute paths (e.g.
   `/home/<user>/...`) to committed files.
 - Verify SSH signatures on commits when the repository uses commit signing.
