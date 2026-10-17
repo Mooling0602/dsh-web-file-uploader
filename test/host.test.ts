@@ -178,6 +178,27 @@ const runPreStep = async (sessionId: string, provider?: string, model?: string):
   )) as InjectedDecision
 }
 
+// A card area larger than the old 100-entry pending cap still injects every
+// reference: the fold threshold bounds the injected text, not a silent drop.
+cfg = { ttl: '7d', foldThreshold: 100 }
+const S_CAP = 'sess-pending-cap'
+for (let i = 1; i <= 120; i += 1) {
+  const name = 'cap-' + String(i).padStart(3, '0') + '.txt'
+  await streamUpload(core, S_CAP, name, 'text/plain', 'cap-content-' + i)
+}
+const capDecision = await runPreStep(S_CAP)
+const capFolders = foldFolderNames().filter((n) => !n.endsWith('-existing'))
+ok('a 120-card group still folds at threshold 100', capFolders.length === 1, foldFolderNames())
+const capFolder = capFolders.length > 0 ? uploadsPath + '/' + capFolders[0] : ''
+ok('the fold moved every one of the 120 cards', existsSync(capFolder) && readdirSync(capFolder).length === 120, existsSync(capFolder) ? readdirSync(capFolder).length : -1)
+const capInjection = injectText(capDecision)
+ok('the injection is the folder line only', capInjection.includes(capFolder + '/') && !capInjection.includes('cap-001.txt'), capInjection)
+for (const file of readdirSync(capFolder)) {
+  await core.remove({ sessionId: S_CAP, path: capFolder + '/' + file })
+}
+await core.deleteMany({ sessionId: S_CAP, paths: [] })
+ok('the oversized card area unpacks back to the uploads root', !existsSync(capFolder) && existsSync(uploadsPath + '/cap-001.txt'))
+
 cfg = { ttl: '7d', foldThreshold: 2 }
 const S3 = 'sess-fold-new'
 const fa = await streamUpload(core, S3, 'fold-a.txt', 'text/plain', 'fold-a-content')

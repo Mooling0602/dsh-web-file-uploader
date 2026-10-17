@@ -211,7 +211,6 @@ export interface HostCore {
 
 export function createHostCore(deps: HostCoreDeps): HostCore {
   const pending = new Map<string, PendingEntry[]>()
-  const PENDING_CAP = 100
   const MODALITY_TTL = 10 * 60 * 1000
   const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -310,7 +309,9 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       row = []
       pending.set(sessionId, row)
     }
-    if (row.length >= PENDING_CAP) row.shift()
+    // No cap here on purpose: every card in the composer's card area must be
+    // injected (or folded), never silently skipped. The injected text is
+    // bounded by the fold threshold, not by dropping references.
     row.push({
       id: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
       name: entry.name,
