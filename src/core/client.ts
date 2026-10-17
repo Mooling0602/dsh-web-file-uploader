@@ -759,51 +759,56 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     // Confirmation surface for × on a card whose upload is still moving: both
     // answers are real, and both avoid leaving an orphan copy behind — cancel
     // drops the staged bytes, keep leaves the card (and its reference) alone.
-    // Escape and a backdrop click take the safe branch.
+    // Escape and a backdrop click take the safe branch. It is a sibling of the
+    // card list, not a child, so the list's scroll overflow cannot clip it.
     const asking = files.find((f) => f.confirmCancel === true)
+    let modal: unknown = null
     if (asking !== undefined) {
-      chips.push(
+      modal = react.createElement(
+        'div',
+        {
+          key: 'dfu-cancel-confirm',
+          className: 'dfu-modal-backdrop',
+          onClick: () => keepUploading(sessionId, asking.id),
+        },
         react.createElement(
           'div',
           {
-            key: 'dfu-cancel-confirm',
-            className: 'dfu-modal-backdrop',
-            onClick: () => keepUploading(sessionId, asking.id),
+            className: 'dfu-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': tFn('cancelTitle'),
+            onClick: (event: Event) => event.stopPropagation(),
+            onKeyDown: (event: KeyboardEvent) => {
+              if (event.key === 'Escape') keepUploading(sessionId, asking.id)
+            },
           },
+          react.createElement('div', { className: 'dfu-modal-title' }, tFn('cancelTitle')),
+          react.createElement('div', { className: 'dfu-modal-body' }, tFn('cancelBody')),
+          react.createElement('div', { className: 'dfu-modal-file', title: asking.name }, asking.name),
           react.createElement(
             'div',
-            {
-              className: 'dfu-modal',
-              role: 'dialog',
-              'aria-modal': 'true',
-              'aria-label': tFn('cancelTitle'),
-              onClick: (event: Event) => event.stopPropagation(),
-              onKeyDown: (event: KeyboardEvent) => {
-                if (event.key === 'Escape') keepUploading(sessionId, asking.id)
-              },
-            },
-            react.createElement('div', { className: 'dfu-modal-title' }, tFn('cancelTitle')),
-            react.createElement('div', { className: 'dfu-modal-body' }, tFn('cancelBody')),
-            react.createElement('div', { className: 'dfu-modal-file', title: asking.name }, asking.name),
+            { className: 'dfu-modal-actions' },
             react.createElement(
-              'div',
-              { className: 'dfu-modal-actions' },
-              react.createElement(
-                'button',
-                { type: 'button', className: 'dfu-modal-cancel', onClick: () => cancelUpload(sessionId, asking.id) },
-                tFn('cancelConfirm'),
-              ),
-              react.createElement(
-                'button',
-                { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: () => keepUploading(sessionId, asking.id) },
-                tFn('cancelKeep'),
-              ),
+              'button',
+              { type: 'button', className: 'dfu-modal-cancel', onClick: () => cancelUpload(sessionId, asking.id) },
+              tFn('cancelConfirm'),
+            ),
+            react.createElement(
+              'button',
+              { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: () => keepUploading(sessionId, asking.id) },
+              tFn('cancelKeep'),
             ),
           ),
         ),
       )
     }
-    return react.createElement('div', { className: 'dfu-dock' }, chips)
+    return react.createElement(
+      'div',
+      { className: 'dfu-dock' },
+      react.createElement('div', { className: 'dfu-dock-list' }, chips),
+      modal,
+    )
   }
 
   const CSS = `
@@ -838,7 +843,20 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   margin: 0 auto;
   padding: 2px var(--dsh-composer-dock-inset, 0px) 10px;
   flex: none;
+  display: flex; flex-direction: column;
+}
+/* The card list scrolls instead of growing without bound and pushing the
+   composer (and the conversation) up: two rows of cards fit, and any extra
+   files scroll here. The cancel-confirmation dialog is a sibling, so this
+   overflow never clips it (a scroll container would otherwise clip a
+   non-fixed child, though a fixed backdrop would still escape). */
+.dfu-dock-list {
   display: flex; flex-wrap: wrap; gap: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dsw-alias-border-l2, rgba(127, 127, 127, 0.4)) transparent;
 }
 .dfu-chip {
   display: inline-flex; align-items: center; gap: 8px;
