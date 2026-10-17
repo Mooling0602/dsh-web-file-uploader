@@ -7,6 +7,10 @@
 # semver prerelease: alpha, beta, rc, ...) and publishes to npm when the
 # NODE_AUTH_TOKEN secret is configured.
 #
+# The repository commits no build output: the tarball built here is the
+# installable artifact, so a GitHub Release ships a ready-to-install package
+# without a build step on the user's machine.
+#
 # See PUBLISHING.md for the release checklist, the npm dist-tag policy and the
 # optional npm credentials.
 name: release
@@ -158,12 +162,14 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Verify the committed bundle is reproducible
+      - name: Verify the build only writes generated files
         shell: bash
         run: |
           set -euo pipefail
+          # lib/ and client/src/client.js are git-ignored build output; the
+          # build must not modify anything that is tracked.
           if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::the build changed tracked files; commit the rebuilt bundle before tagging"
+            echo "::error::the build changed tracked files; generated output must stay untracked"
             git status --short
             git diff --stat
             exit 1
@@ -303,6 +309,15 @@ jobs:
             echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"
             echo "| npm dist-tag | \`${{ steps.version.outputs.npm_dist_tag }}\` |"
             echo "| tarball | \`${{ steps.pack.outputs.tarball }}\` |"
+            tarball="${{ steps.pack.outputs.tarball }}"
+            if [ -n "${tarball}" ] && [ "${DRY_RUN}" != "true" ]; then
+              echo ""
+              echo "Install this build:"
+              echo ""
+              echo '```bash'
+              echo "dsh plugin --profile web add https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "${tarball}")"
+              echo '```'
+            fi
             if [ "${DRY_RUN}" = "true" ]; then
               echo ""
               echo "> Dry run: no GitHub Release was created and nothing was published."

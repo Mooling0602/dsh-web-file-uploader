@@ -22,3 +22,8 @@ pnpm-lock.yaml
 
 # Sandbox-local package caches (read-only HOME workarounds)
 .xdg/
+
+# Build output — `pnpm build` regenerates these; they are git-ignored and ship
+# only inside the release tarball / npm package, never from the git tree.
+lib/
+client/src/client.js

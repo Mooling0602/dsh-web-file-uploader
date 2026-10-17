@@ -57,3 +57,16 @@ jobs:
         if: steps.gate.outputs.run == 'true'
       - run: pnpm build
         if: steps.gate.outputs.run == 'true'
+      # lib/ and client/src/client.js are git-ignored build output: the build
+      # must not modify anything that is tracked (the release workflow runs the
+      # same guard before packing).
+      - name: Verify the build only writes generated files
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::pnpm build changed tracked files; generated output must stay untracked"
+            git status --short
+            git diff --stat
+            exit 1
+          fi

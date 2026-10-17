@@ -22,8 +22,9 @@
 // produced by the DSH repo's build (vite + a module map). If the loader's
 // require graph differs, adjust the injected require lines here.
 //
-// Outputs:
-//   lib/index.js, lib/core/host.js, lib/util.js   (tsc)
+// Outputs (git-ignored — a checkout ships sources only; the release tarball and
+// the npm package carry the built files):
+//   lib/index.js, lib/core/host.js, lib/types.js  (tsc)
 //   client/src/client.js                          (core inlined into the seam)
 //   lib/client.js                                 (the wrapped loader module)
 
@@ -52,6 +53,9 @@ const core = inlineCore('lib/core/client.js')
 const marker = '// __CORE__'
 if (!seam.includes(marker)) throw new Error('lib/client-static.js: missing ' + marker + ' marker')
 const src = seam.replace(marker, core) + '\n'
+// client/src is untracked (the build output is git-ignored), so a fresh
+// checkout has no such directory yet: create it before writing the file.
+mkdirSync(join(root, 'client', 'src'), { recursive: true })
 writeFileSync(join(root, 'client', 'src', 'client.js'), src)
 console.log('generated client/src/client.js')
 
