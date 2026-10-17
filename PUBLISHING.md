@@ -118,6 +118,9 @@ A `v`-prefixed tag does not trigger the workflow. Two steps:
    git push origin main 1.0.0-alpha.3
    ```
 
+   The release commit subject must be exactly `release: v<version>` — never
+   `chore(release):`; the workflow validates it against the tag.
+
    A final release works the same way (`npm version 1.0.0
    --no-git-tag-version`, commit `release: v1.0.0`, tag `1.0.0`).
 
@@ -126,7 +129,8 @@ commit and the annotated bare tag are created explicitly, so the tag never
 picks up the `v` prefix. The workflow then:
 
 1. rejects a tag that carries a `v` prefix, does not match `package.json`, is
-   not valid semver, or whose commit is not reachable from `main`;
+   not valid semver, whose commit is not reachable from `main`, or whose commit
+   subject is not `release: v<version>`;
 2. extracts the `## <version>` section from `CHANGELOG.md` and fails when it is
    missing, empty, duplicated, or still contains the `hash123` placeholder;
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the

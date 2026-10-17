@@ -99,8 +99,11 @@ writes it. Agents must not invent release entries:
 - The git tag is the **bare** `package.json` version: `1.0.0-alpha.3`, never
   `v1.0.0-alpha.3`. `.github/workflows/release.yml` triggers on bare version
   tags only, and a `v`-prefixed tag fails the manual-dispatch validation.
-- The release commit subject keeps the `v` prefix:
-  `release: v1.0.0-alpha.3`.
+- The release commit subject is exactly `release: v<version>`:
+  `release: v1.0.0-alpha.3`. A version-bump commit must **never** use a
+  `chore:` / `chore(release):` header: the `ci` gate treats `chore` pushes as
+  skippable, and `release.yml` rejects a tag whose commit subject is not
+  `release: v<version>`.
 - The annotated tag message carries the release commit hash:
   `git tag -a 1.0.0-alpha.3 -m "commit <short-hash>"`.
 - The GitHub Release title keeps the `v` prefix: `v1.0.0-alpha.3`.
@@ -119,5 +122,7 @@ writes it. Agents must not invent release entries:
   Never move or delete a published tag — bump the version instead.
 - The `ci` workflow starts with a gate: a single-commit push whose subject
   starts with `docs:` or `chore:` (scoped forms included) skips
-  checkout/install/typecheck/test/build and finishes green in seconds.
-  Multi-commit pushes and pull requests always run the full gate.
+  checkout/install/typecheck/test/build and finishes green in seconds —
+  unless the commit touches `package.json` (version bumps and dependency edits
+  always run the full gate). Multi-commit pushes and pull requests always run
+  the full gate.
