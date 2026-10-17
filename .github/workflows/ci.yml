@@ -13,8 +13,9 @@ jobs:
       # A single-commit `docs:` / `chore:` push (scoped forms such as
       # `chore(release):` included) cannot change the shipped bundle, so the
       # expensive steps are skipped and the run finishes green in seconds.
-      # Multi-commit pushes always run: the head subject alone cannot prove the
-      # other commits are docs/chore. Pull requests always run.
+      # A push that touches `package.json` always runs the full gate. Multi-
+      # commit pushes always run: the head subject alone cannot prove the other
+      # commits are docs/chore. Pull requests always run.
       - name: Decide whether the full gate is needed
         id: gate
         shell: bash
@@ -25,7 +26,14 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ]; then
             subject="$(jq -r '(.head_commit.message // "") | split("\n")[0]' "${GITHUB_EVENT_PATH}")"
             case "${subject}" in
-              docs:*|docs\(*|chore:*|chore\(*) run=false ;;
+              docs:*|docs\(*|chore:*|chore\(*)
+                # Manifest changes (version bumps, dependency edits) always run
+                # the full gate, whatever the subject says.
+                touches_manifest="$(jq -r '[(.commits // [])[] | ((.added // []) + (.removed // []) + (.modified // []))] | flatten | index("package.json") != null' "${GITHUB_EVENT_PATH}")"
+                if [ "${touches_manifest}" = "false" ]; then
+                  run=false
+                fi
+                ;;
             esac
           fi
           echo "run=${run}" >> "${GITHUB_OUTPUT}"

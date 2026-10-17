@@ -91,6 +91,15 @@ jobs:
             exit 1
           fi
 
+          # The tag must sit on the release commit: `release: v<version>`,
+          # never a `chore:` / `chore(release):` header.
+          expected_subject="release: v${version}"
+          actual_subject="$(git log -1 --format=%s HEAD)"
+          if [ "${actual_subject}" != "${expected_subject}" ]; then
+            echo "::error::the release commit subject must be '${expected_subject}' (found '${actual_subject}'); version bumps never use the chore header"
+            exit 1
+          fi
+
           # Only release commits that already landed on main: a tag on an
           # unmerged branch would ship unreviewed code.
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
