@@ -125,6 +125,7 @@ const uploads: string[] = []
 const removes: Array<{ sessionId?: string; path: string }> = []
 const deletes: Array<{ sessionId?: string; path: string }> = []
 let reply: UploadReply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
+let maxFilesSetting = 100
 
 const core = createClientCore({
   react,
@@ -134,7 +135,7 @@ const core = createClientCore({
   },
   remove: async (args) => { removes.push(args); return { ok: true } },
   delete: async (args) => { deletes.push(args); return { ok: true } },
-  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true }),
+  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting }),
   insertStyles: () => {},
 })
 const ctx = {
@@ -201,13 +202,17 @@ const fileInput = (tree: unknown): FakeNode => {
   }
   return input
 }
-const pick = async (name: string): Promise<void> => {
+const pickMany = async (files: Array<{ name: string; size: number }>): Promise<void> => {
   const input = fileInput(attachSlot.render({ sessionId: S }))
   const onChange = input.props!.onChange as (event: unknown) => void
-  onChange({ target: { files: [{ name, size: 12, type: 'text/plain' }], value: '' } })
-  // Let the stubbed upload settle, then let the store update the card.
+  const before = uploads.length
+  onChange({ target: { files: files.map((f) => ({ name: f.name, size: f.size, type: 'text/plain' })), value: '' } })
+  // The picker awaits the config before starting uploads; wait for the transport
+  // calls, then let the stubbed replies settle.
+  for (let i = 0; i < 50 && uploads.length === before; i += 1) await new Promise((r) => setTimeout(r, 0))
   await new Promise((r) => setTimeout(r, 0))
 }
+const pick = async (name: string): Promise<void> => pickMany([{ name, size: 12 }])
 
 // ---- 1: the card that created the copy owns the permanent delete -----------
 reply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
@@ -351,6 +356,28 @@ await pick('shared-c.txt')
 tree = cards()
 ok('delete-all hides when every card is a shared copy', findAction(dicts.zh.deleteAllCards) === undefined)
 ok('remove-all stays available for shared copies', findAction(dicts.zh.clearAllCards) !== undefined)
+
+// ---- 7: the max-files limit trims a pick and shows a notice ---------------
+// Section 6 left two shared-copy cards; clear them before counting.
+;(findAction(dicts.zh.clearAllCards)!.props!.onClick as () => void)()
+;(findAction(dicts.zh.clearAllConfirm)!.props!.onClick as () => void)()
+tree = cards()
+ok('the dock is empty before the max-files test', tree === null, tree)
+
+maxFilesSetting = 2
+const uploadsBeforeLimit = uploads.length
+await pickMany([{ name: 'm1.txt', size: 1 }, { name: 'm2.txt', size: 1 }, { name: 'm3.txt', size: 1 }])
+tree = cards()
+ok('max-files refuses the whole over-limit pick', uploads.length === uploadsBeforeLimit, uploads.slice(uploadsBeforeLimit))
+ok('max-files keeps no cards from the refused pick', byClass(tree, 'dfu-chip').length === 0, byClass(tree, 'dfu-chip').length)
+ok('max-files shows the notice', textOf(tree).includes(dicts.zh.tooManyFilesTitle), textOf(tree))
+ok('max-files notice names the limit', textOf(tree).includes('单次上传最多 2 个文件。'), textOf(tree))
+const dismissNotice = byClass(tree, 'dfu-modal-keep')
+ok('the notice has a dismiss button', dismissNotice.length === 1, dismissNotice.length)
+;(dismissNotice[0].props!.onClick as () => void)()
+tree = cards()
+ok('dismissing clears the notice', tree === null, tree)
+maxFilesSetting = 100
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

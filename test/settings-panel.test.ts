@@ -116,13 +116,19 @@ const locale = {
 
 let listResult: FilesListResult | null = { ok: true, files: [], ttl: 604800000, now: Date.now() }
 let savedConfig: Record<string, unknown> | null = null
+let configResult: Record<string, unknown> = {
+  ttl: '7d',
+  replaceOfficial: false,
+  alwaysShowButton: true,
+  maxFiles: 100,
+}
 
 const core = createClientCore({
   react,
   upload: async () => ({ ok: true }),
   remove: async () => ({ ok: true }),
   delete: async () => ({ ok: true }),
-  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true }),
+  configGet: async () => configResult,
   configSet: async (cfg) => {
     savedConfig = cfg as Record<string, unknown>
     return {
@@ -130,6 +136,7 @@ const core = createClientCore({
       ttl: String(cfg.ttl ?? ''),
       replaceOfficial: cfg.replaceOfficial === true,
       alwaysShowButton: cfg.alwaysShowButton !== false,
+      maxFiles: cfg.maxFiles,
     }
   },
   filesList: async () => listResult,
@@ -287,6 +294,36 @@ ok('save button exists', saveBtn !== undefined)
 await new Promise((r) => setTimeout(r, 0))
 ok('save sends the always-show setting', (savedConfig as Record<string, unknown> | null)?.alwaysShowButton === false, savedConfig)
 ok('save keeps the replacement setting', (savedConfig as Record<string, unknown> | null)?.replaceOfficial === false, savedConfig)
+
+// ---- max-files stepper ----
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 7 }
+tree = await mount()
+const stepperInput = () => byClass(tree, 'dfu-stepper-input')[0]
+ok('max-files stepper renders the configured value', stepperInput()?.props!.value === '7', stepperInput()?.props!.value)
+const stepperButtons = byClass(tree, 'dfu-stepper-btn')
+ok('max-files stepper has two buttons', stepperButtons.length === 2, stepperButtons.length)
+const plusBtn = stepperButtons.find((b) => b.props!.title === dicts.zh.increase)
+ok('the plus button is labelled', plusBtn !== undefined)
+;(plusBtn!.props!.onClick as () => void)()
+tree = draw()
+ok('plus steps by ten', stepperInput()?.props!.value === '17', stepperInput()?.props!.value)
+;(stepperInput().props!.onChange as (e: unknown) => void)({ target: { value: '0' } })
+tree = draw()
+ok('zero renders the unlimited warning', byClass(tree, 'dfu-settings-warning').length === 1)
+ok('the warning copies the dictionary line', textOf(byClass(tree, 'dfu-settings-warning')[0]) === dicts.zh.maxFilesWarning)
+const saveZero = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveZero!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+tree = draw()
+ok('save sends the unlimited value', (savedConfig as Record<string, unknown> | null)?.maxFiles === 0, savedConfig)
+;(stepperInput().props!.onChange as (e: unknown) => void)({ target: { value: '99999' } })
+tree = draw()
+ok('non-zero value clears the warning', byClass(tree, 'dfu-settings-warning').length === 0)
+const saveBig = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveBig!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('save clamps an oversized value', (savedConfig as Record<string, unknown> | null)?.maxFiles === 10000, savedConfig)
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100 }
 
 // ---- i18n contract ----
 ok('zh carries manageInUseNotice', typeof dicts.zh.manageInUseNotice === 'string' && dicts.zh.manageInUseNotice.length > 0)

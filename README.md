@@ -148,15 +148,21 @@ race in-flight writes; no background task is required.
   `0` (or an empty/invalid value) **disables automatic GC** — files then leave
   disk only through an explicit delete: the 🗑 on the card that created the
   stored copy, or the settings panel's file manager.
+- **Max files per picker selection** (Settings → File uploads): the composer
+  uploads at most this many files from one pick; the default is `100` and `0`
+  means unlimited (the panel shows a warning line). A larger pick is refused
+  as a whole - nothing is uploaded - and raises a "cannot upload or reference
+  more files" notice. The limit is client-side, so the shell's own upload
+  entry is not affected when the replacement switch is off.
 - **Configure** in **Settings → File uploads** (native DSH settings panel; the
   tab carries its own paperclip mark - the composer button's own diagonal
   glyph, at the same scale - so it never reads as the gear rows other plugins
-  get): the retention field and the two upload-entry switches (*Replace the
-  official add-file entry*, *Always show the standalone attach button*) share
-  one Save button. The bundle persists all three in
+  get): the retention field, the max-files stepper and the two upload-entry
+  switches (*Replace the official add-file entry*, *Always show the standalone
+  attach button*) share one Save button. The bundle persists all of them in
   `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial,
-  alwaysShowButton }`) and merges updates field by field, so saving one never
-  clears another. The environment variable `DSH_UPLOAD_TTL` (e.g.
+  alwaysShowButton, maxFiles }`) and merges updates field by field, so saving
+  one never clears another. The environment variable `DSH_UPLOAD_TTL` (e.g.
   `DSH_UPLOAD_TTL=30m`) is honored as a fallback before the default.
 
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,

@@ -63,7 +63,8 @@ export function apply(ctx: PluginContext): void {
   //   replaceOfficial  replace the shell's "Add -> File" menu entry with ours
   //   alwaysShowButton keep the standalone composer button visible at all times
   //                    (see src/core/client.ts)
-  let runtimeConfig = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true }
+  //   maxFiles         max files one picker selection may upload; 0 = unlimited
+  let runtimeConfig = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100 }
   const readConfigFile = (): Record<string, unknown> | null => {
     try {
       const text = existsSync(configPath()) ? readFileSync(configPath(), 'utf8') : ''
@@ -74,7 +75,13 @@ export function apply(ctx: PluginContext): void {
     }
     return null
   }
-  const getConfig = (): { ttl: string; replaceOfficial: boolean; alwaysShowButton: boolean } => {
+  // Clamp a max-files value: integers only, 0 (unlimited) through a sane ceiling.
+  const clampMaxFiles = (raw: unknown): number | undefined => {
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+    if (!Number.isFinite(n)) return undefined
+    return Math.max(0, Math.min(10000, Math.floor(n)))
+  }
+  const getConfig = (): { ttl: string; replaceOfficial: boolean; alwaysShowButton: boolean; maxFiles: number } => {
     const fromFile = readConfigFile()
     let ttl = fromFile && typeof fromFile.ttl === 'string' && fromFile.ttl !== '' ? fromFile.ttl : undefined
     if (ttl === undefined && process.env && process.env.DSH_UPLOAD_TTL) ttl = process.env.DSH_UPLOAD_TTL
@@ -85,15 +92,18 @@ export function apply(ctx: PluginContext): void {
     const alwaysShowButton = fromFile && typeof fromFile.alwaysShowButton === 'boolean'
       ? fromFile.alwaysShowButton
       : runtimeConfig.alwaysShowButton
-    return { ttl, replaceOfficial, alwaysShowButton }
+    const maxFiles = clampMaxFiles(fromFile && fromFile.maxFiles) ?? runtimeConfig.maxFiles
+    return { ttl, replaceOfficial, alwaysShowButton, maxFiles }
   }
   // Partial update: a caller that only knows about one field must not clear the
   // other, so the patch is merged over the resolved config.
-  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean }): void => {
+  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number }): void => {
     const next = getConfig()
     if (patch && patch.ttl != null) next.ttl = String(patch.ttl).trim()
     if (patch && typeof patch.replaceOfficial === 'boolean') next.replaceOfficial = patch.replaceOfficial
     if (patch && typeof patch.alwaysShowButton === 'boolean') next.alwaysShowButton = patch.alwaysShowButton
+    const clampedMaxFiles = clampMaxFiles(patch ? patch.maxFiles : undefined)
+    if (clampedMaxFiles !== undefined) next.maxFiles = clampedMaxFiles
     runtimeConfig = next
     try {
       // A fresh DSH_HOME may not exist yet; the write is the only thing that
@@ -382,10 +392,14 @@ export function apply(ctx: PluginContext): void {
           } catch {
             parsed = {}
           }
-          const patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean } = {}
+          const patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number } = {}
           if (parsed.ttl != null) patch.ttl = String(parsed.ttl)
           if (typeof parsed.replaceOfficial === 'boolean') patch.replaceOfficial = parsed.replaceOfficial
           if (typeof parsed.alwaysShowButton === 'boolean') patch.alwaysShowButton = parsed.alwaysShowButton
+          if (parsed.maxFiles != null) {
+            const clamped = clampMaxFiles(parsed.maxFiles)
+            if (clamped !== undefined) patch.maxFiles = clamped
+          }
           setConfig(patch)
           sendJson(res, 200, getConfig())
           return

@@ -94,6 +94,8 @@ export interface DfuConfig {
   ttl?: string
   replaceOfficial?: boolean
   alwaysShowButton?: boolean
+  /** Max files one picker selection may upload; 0 means unlimited. */
+  maxFiles?: number
 }
 
 /** One row of the settings "manage files" inventory (mirrors the host core). */
@@ -202,6 +204,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       settingsTitle: '文件上传',
       ttlLabel: '自动清理保留期',
       ttlHint: '支持 1s / 1m / 1h / 1d，输入 0 表示永不清理。超过保留期且未被引用的文件会被自动清除。',
+      maxFilesLabel: '单次上传最大文件数量',
+      maxFilesHint: '0 表示不限制，默认 100；超过上限的整次选择会被拒绝。只统计本插件入口的一次选择。',
+      maxFilesWarning: '已设为 0（不限制）：一次选择过多文件可能拖慢浏览器和宿主。',
+      increase: '增加',
+      decrease: '减少',
+      tooManyFilesTitle: '无法上传或引用更多文件',
+      tooManyFilesBody: '单次上传最多 {n} 个文件。',
+      ok: '知道了',
       save: '保存',
       replaceOfficial: '替代官方添加文件入口',
       replaceHint: '开启后隐藏官方「添加 → 文件」入口，在原位置换成插件自己的入口：斜向回形针图标，文字仍是「文件」，命令名改为 attach-file。',
@@ -263,6 +273,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       settingsTitle: 'File uploads',
       ttlLabel: 'Auto-cleanup retention',
       ttlHint: 'Use 1s / 1m / 1h / 1d; enter 0 to never clean. Files past the retention that are no longer referenced are removed automatically.',
+      maxFilesLabel: 'Max files per upload',
+      maxFilesHint: '0 means unlimited; default 100. A pick over the limit is refused as a whole. Counts one picker selection through this plugin.',
+      maxFilesWarning: 'Set to 0 (unlimited): picking many files at once can slow the browser and the host.',
+      increase: 'Increase',
+      decrease: 'Decrease',
+      tooManyFilesTitle: 'Cannot upload or reference more files',
+      tooManyFilesBody: 'A single upload accepts at most {n} files.',
+      ok: 'OK',
       save: 'Save',
       replaceOfficial: 'Replace the official add-file entry',
       replaceHint: 'Hides the official Add → File entry and puts this plugin’s own entry in its place: the angled paperclip icon, the same “File” text, and the command name attach-file.',
@@ -325,10 +343,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     add(sessionId: string | undefined, entry: FileCard): void
     update(sessionId: string | undefined, id: string, patch: Partial<FileCard>): void
     remove(sessionId: string | undefined, id: string): void
+    /** One-shot composer notice (e.g. the over-limit popup), per session. */
+    notice(sessionId: string | undefined): string | null
+    setNotice(sessionId: string | undefined, text: string | null): void
   }
 
   function createStore(): UploadStore {
     const bySession = new Map<string | undefined, FileCard[]>()
+    const noticeBySession = new Map<string | undefined, string>()
     const listeners = new Set<() => void>()
     const emit = () => {
       listeners.forEach((fn) => fn())
@@ -363,6 +385,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
           if (f.previewUrl && typeof URL !== 'undefined') URL.revokeObjectURL(f.previewUrl)
           row.splice(i, 1)
         }
+        emit()
+      },
+      notice(sessionId) {
+        return noticeBySession.get(sessionId) ?? null
+      },
+      setNotice(sessionId, text) {
+        if (text === null || text === '') noticeBySession.delete(sessionId)
+        else noticeBySession.set(sessionId, text)
         emit()
       },
     }
@@ -559,8 +589,30 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     }
     const onPick = (event: Event) => {
       const input = event.target as HTMLInputElement
-      const files = Array.from(input.files || [])
+      const picked = Array.from(input.files || [])
       input.value = ''
+      void startUpload(picked)
+    }
+    // One picker selection is one batch: the configured max-files limit applies
+    // to it. A pick over the limit is refused as a whole — nothing is discarded,
+    // because the notice already tells the user no further files can be added.
+    // A failed config read falls back to the default so a broken settings route
+    // cannot silently drop the guard.
+    const startUpload = async (picked: File[]) => {
+      if (picked.length === 0) return
+      const files = picked
+      let maxFiles = 100
+      try {
+        const cfg = typeof configGet === 'function' ? await configGet() : null
+        const raw = cfg && typeof cfg.maxFiles === 'number' ? cfg.maxFiles : maxFiles
+        if (Number.isFinite(raw)) maxFiles = Math.max(0, Math.min(10000, Math.floor(raw)))
+      } catch {
+        // keep the default limit
+      }
+      if (maxFiles > 0 && files.length > maxFiles) {
+        store.setNotice(sessionId, tf('tooManyFilesBody', { n: maxFiles }))
+        return
+      }
       files.forEach((file: File) => {
         const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
         const isImage = IMAGE_TYPES.includes(file.type)
@@ -673,11 +725,12 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     const [armed, setArmed] = react.useState<'clear' | 'delete' | null>(null)
     const sessionId = sessionIdOf(props)
     const files = store.files(sessionId)
+    const notice = store.notice(sessionId)
     react.useEffect(() => {
       // Drop an armed batch confirmation once individual cards thin the list out.
       if (files.length <= 1) setArmed(null)
     }, [files.length])
-    if (!files.length) return null
+    if (!files.length && notice === null) return null
     const chips: unknown[] = []
     files.forEach((f) => {
       let preview = null
@@ -931,12 +984,54 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       }
       batchBar = react.createElement('div', { className: 'dfu-dock-bar' }, batchChildren)
     }
+    // Over-limit picker notice: a fixed dialog (like the cancel confirmation)
+    // so it stays visible regardless of where the dock sits in the composer.
+    const noticeModal = notice === null
+      ? null
+      : react.createElement(
+          'div',
+          {
+            key: 'dfu-notice',
+            className: 'dfu-modal-backdrop',
+            onClick: () => store.setNotice(sessionId, null),
+          },
+          react.createElement(
+            'div',
+            {
+              className: 'dfu-modal',
+              role: 'dialog',
+              'aria-modal': 'true',
+              'aria-label': tFn('tooManyFilesTitle'),
+              onClick: (event: Event) => event.stopPropagation(),
+              onKeyDown: (event: KeyboardEvent) => {
+                if (event.key === 'Escape') store.setNotice(sessionId, null)
+              },
+            },
+            react.createElement('div', { className: 'dfu-modal-title' }, tFn('tooManyFilesTitle')),
+            react.createElement('div', { className: 'dfu-modal-body' }, notice),
+            react.createElement(
+              'div',
+              { className: 'dfu-modal-actions' },
+              react.createElement(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dfu-modal-keep',
+                  autoFocus: true,
+                  onClick: () => store.setNotice(sessionId, null),
+                },
+                tFn('ok'),
+              ),
+            ),
+          ),
+        )
     return react.createElement(
       'div',
       { className: 'dfu-dock' },
       batchBar,
       react.createElement('div', { className: 'dfu-dock-list' }, chips),
       modal,
+      noticeModal,
     )
   }
 
@@ -1148,6 +1243,23 @@ body[data-ds-dark-theme] .dfu-modal-keep { color: #000; }
   border-radius: 8px; background: var(--dsw-alias-bg-layer-1, transparent);
   color: var(--dsw-alias-label-primary, #333);
 }
+/* Max-files stepper: a compact − [n] + cluster after the label. */
+.dfu-settings-stepper { gap: 6px; }
+.dfu-settings-stepper .dfu-settings-label { flex: 1; }
+.dfu-stepper-btn {
+  width: 26px; height: 26px; flex: none; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, .25));
+  border-radius: 7px; background: transparent;
+  color: var(--dsw-alias-label-secondary, #8a8f98);
+}
+.dfu-stepper-btn:hover {
+  color: var(--dsw-alias-label-primary, #333);
+  background: var(--dsw-alias-bg-layer-1, rgba(127, 127, 127, .08));
+}
+.dfu-stepper-input { flex: 0 0 72px; text-align: center; padding: 4px 6px; }
+.dfu-settings-warning { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-state-error-primary, #ef4444); }
 .dfu-settings-hint { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); line-height: 1.5; }
 .dfu-settings-actions { display: flex; align-items: center; gap: 10px; }
 .dfu-settings-save {
@@ -1243,6 +1355,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const [ttl, setTtl] = react.useState('')
     const [replaceOn, setReplaceOn] = react.useState(false)
     const [alwaysShowOn, setAlwaysShowOn] = react.useState(true)
+    const [maxFiles, setMaxFiles] = react.useState('100')
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
     react.useEffect(() => {
       let alive = true
@@ -1253,21 +1366,37 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
             if (r.ttl != null) setTtl(String(r.ttl))
             setReplaceOn(r.replaceOfficial === true)
             setAlwaysShowOn(r.alwaysShowButton !== false)
+            if (r.maxFiles != null) setMaxFiles(String(r.maxFiles))
           })
           .catch(() => {})
       }
       return () => { alive = false }
     }, [])
+    // The max-files control is a stepper: the buttons move by ten, typing wins
+    // for exact values, and the save path clamps whatever ended up in the box.
+    const clampMaxFiles = (raw: string): number => {
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return 100
+      return Math.max(0, Math.min(10000, Math.floor(n)))
+    }
+    const stepMaxFiles = (delta: number) => {
+      const base = Number(maxFiles)
+      const from = Number.isFinite(base) ? Math.floor(base) : 100
+      setMaxFiles(String(Math.max(0, Math.min(10000, from + delta))))
+    }
+    const maxFilesNum = Number(maxFiles)
+    const maxFilesIsZero = maxFiles.trim() !== '' && maxFilesNum === 0
     const save = () => {
       if (typeof configSet !== 'function') return
       setStatus('saving')
-      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn, alwaysShowButton: alwaysShowOn })
+      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn, alwaysShowButton: alwaysShowOn, maxFiles: clampMaxFiles(maxFiles) })
         .then((r) => {
           if (r && r.ok === false) {
             setStatus('error')
             return
           }
           if (r && r.ttl != null) setTtl(String(r.ttl))
+          if (r && r.maxFiles != null) setMaxFiles(String(r.maxFiles))
           // Echo wins when the host knows the field; an older host that does not
           // still keeps the requested values, so saving never flips the switch
           // back on screen.
@@ -1325,6 +1454,47 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         ),
       ),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('alwaysShowHint')),
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-row dfu-settings-stepper' },
+        react.createElement('label', { className: 'dfu-settings-label' }, tFn('maxFilesLabel')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dfu-stepper-btn',
+            title: tFn('decrease'),
+            'aria-label': tFn('decrease'),
+            onClick: () => stepMaxFiles(-10),
+          },
+          '\u2212',
+        ),
+        react.createElement('input', {
+          className: 'dfu-settings-input dfu-stepper-input',
+          value: maxFiles,
+          inputMode: 'numeric',
+          spellCheck: false,
+          onChange: (e: Event) => {
+            const next = (e.target as HTMLInputElement).value.replace(/[^0-9]/g, '').slice(0, 5)
+            setMaxFiles(next)
+          },
+        }),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dfu-stepper-btn',
+            title: tFn('increase'),
+            'aria-label': tFn('increase'),
+            onClick: () => stepMaxFiles(10),
+          },
+          '+',
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('maxFilesHint')),
+      maxFilesIsZero
+        ? react.createElement('div', { className: 'dfu-settings-warning' }, tFn('maxFilesWarning'))
+        : null,
       react.createElement(
         'div',
         { className: 'dfu-settings-row' },
