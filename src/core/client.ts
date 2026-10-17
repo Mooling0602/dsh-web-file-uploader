@@ -933,7 +933,18 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   background: var(--dsw-alias-brand-primary, #4d6bfe); color: #fff;
 }
 body[data-ds-dark-theme] .dfu-modal-keep { color: #000; }
-.dfu-settings { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
+/* Settings page: one column that fills the section's content area (the shell's
+   options column already supplies 24px of side padding). The page's own 8/16px
+   inset matches the built-in settings cards' inner padding, so the plugin's
+   copy and controls sit on the same grid as the shell's own pages instead of
+   hugging the column edge; 720px is the shell's readable-width cap. */
+.dfu-settings {
+  display: flex; flex-direction: column; gap: 14px;
+  width: 100%; max-width: 720px; box-sizing: border-box;
+  padding: 8px 16px;
+}
+/* The uploaded-file block inside the page column. */
+.dfu-manage { display: flex; flex-direction: column; gap: 10px; }
 .dfu-settings-row { display: flex; align-items: center; gap: 10px; }
 .dfu-settings-label { font-size: 13px; font-weight: 500; white-space: nowrap; }
 /* Replace-official row: the shell's settings convention (label left, control
@@ -1012,7 +1023,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   cursor: pointer;
   border-bottom: 1px solid var(--dsw-alias-border-secondary, rgba(128, 128, 128, .14));
 }
@@ -1053,7 +1064,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
 }
 .dfu-manage-refresh:disabled { opacity: .6; cursor: default; }
 .dfu-manage-status { font-size: 12px; color: var(--dsw-alias-label-secondary, #8a8f98); margin-top: 6px; }
-.dfu-settings-divider { height: 1px; background: var(--dsw-alias-border-secondary, rgba(128, 128, 128, .2)); margin: 14px 0; }
+.dfu-settings-divider { height: 1px; background: var(--dsw-alias-border-secondary, rgba(128, 128, 128, .2)); margin: 4px 0; }
 `
 
   // --- settings panel ------------------------------------------------------
@@ -1402,7 +1413,9 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       )
     }
 
-    return react.createElement('div', { className: 'dfu-settings dfu-manage' }, children)
+    // The file manager keeps its page inset from the outer `.dfu-settings`; it
+    // must not re-apply that page padding by sharing the class.
+    return react.createElement('div', { className: 'dfu-manage' }, children)
   }
 
   // --- settings nav mark ----------------------------------------------------
