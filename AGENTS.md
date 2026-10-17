@@ -66,6 +66,12 @@ Everything a **human user sees in the UI** is localized through the app's
   scan reads).
 - **dsh API types** are a hand-maintained subset in `src/types.ts` — dsh ships
   none and its interfaces carry breaking changes.
+- **Distribution**: the repository commits no build output. `lib/` and
+  `client/src/client.js` are git-ignored; `pnpm build` generates them, the
+  `prepare` script runs that build on `pnpm install`, on git installs and before
+  packing, and the installable artifact is the `npm pack` tarball attached to
+  the GitHub Release. Rebuild before hot-patching a profile or adding a local
+  directory, and never commit the generated files.
 - **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
   than copying `lib/` by hand. `lib/` is self-contained (the host half imports
   only `./core/*`), so a full copy of it is enough.

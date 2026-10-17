@@ -7,21 +7,23 @@
 to a profile layer **only if** its `package.json` declares `dsh.bundle.patch`
 (this package does — see `cordis.patch.yml`).
 
-Any pnpm-supported source works — **no npm account is required** for local or
-git-based distribution:
+The installable artifact is the **built tarball attached to a GitHub Release**:
+the repository commits no build output, so a git tree or checkout holds sources
+only. Any pnpm-supported source works — **no npm account is required**:
 
 ```bash
-# Local directory (fastest for development)
-dsh plugin --profile web add ../dsh-web-file-uploader
-
-# Git repository (recommended for distribution)
-dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
-
-# Tarball from a GitHub Release (name carries the package version)
-dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.2.tgz
+# Tarball from a GitHub Release (recommended; already built)
+dsh plugin --profile web add \
+  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
 # npm registry (after the first CI publish, see Releases)
 dsh plugin --profile web add dsh-web-file-uploader
+
+# Git repository (rebuilds on install through the prepare script)
+dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
+
+# Local directory (fastest for development; run pnpm build there first)
+dsh plugin --profile web add ../dsh-web-file-uploader
 ```
 
 > **Git spec note**: pnpm's git shorthand is `github:<owner>/<repo>`; a bare
@@ -30,17 +32,23 @@ dsh plugin --profile web add dsh-web-file-uploader
 > `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` or
 > `https://github.com/Mooling0602/dsh-web-file-uploader.git`.
 
-After installing, **restart the dsh web process** and refresh the page.
+A tarball URL is pinned in the profile manifest: switching releases means
+`remove` and `add` the new URL (see [Update](#update)). A downloaded asset can
+be installed with its local path (`./dsh-web-file-uploader-<version>.tgz`)
+instead. After installing, **restart the dsh web process** and refresh the page.
 
 ### Prerequisites
 
-- The bundle must be built before install: `pnpm build` (compiles `src/` into
-  `lib/` and writes `lib/client.js` + `client/src/client.js`). `lib/` is
-  committed, so a fresh clone ships the last build — rebuild after touching
-  `src/`.
-- Git-hosted installs run the `prepare` script on install (it rebuilds the
-  bundle). pnpm blocks build scripts by default — allow the exact key pnpm
-  prints in `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run.
+- The repository ships **sources only**: `lib/` and `client/src/client.js` are
+  git-ignored build output. The GitHub Release tarball and the npm package
+  contain the built files; a checkout does not.
+- Build a checkout with `pnpm build` (compiles `src/` into `lib/` and writes
+  `lib/client.js` + `client/src/client.js`); `pnpm install` also runs that
+  build through the `prepare` script.
+- Git-hosted installs run the `prepare` script on install. pnpm blocks build
+  scripts by default — allow the exact key pnpm prints in
+  `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run (the plugin
+  manager UI asks for the same approval).
 - ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort
   emulation of the DSH web toolchain output. **Verify it against the real web
   build before distributing** (compare with a shipped
@@ -75,6 +83,10 @@ tags** (`1.0.0-alpha.3`, no `v` prefix). The only manual input is the
 maintainer-written `CHANGELOG.md` entry: the workflow copies its `## <version>`
 section verbatim into the GitHub Release body, so no notes are generated from
 commits or PRs.
+
+Every release attaches `dsh-web-file-uploader-<version>.tgz` — the built,
+installable package, since the repository commits no `lib/` — and the run page
+prints the matching `dsh plugin ... add <asset URL>` command.
 
 ### Cutting a release
 
@@ -134,8 +146,8 @@ picks up the `v` prefix. The workflow then:
 2. extracts the `## <version>` section from `CHANGELOG.md` and fails when it is
    missing, empty, duplicated, or still contains the `hash123` placeholder;
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
-   committed bundle is not reproducible (`git status` must stay clean after
-   the build);
+   build modifies a tracked file (`git status` must stay clean; the generated
+   output is git-ignored);
 4. packs the npm tarball and asserts the shipped files are inside it;
 5. creates a **GitHub Release** titled `v<version>` whose body is the
    extracted section, with the tarball attached. Any semver prerelease
@@ -199,7 +211,22 @@ the web profile directory, so any pnpm management verb works. Never edit
 `~/.dsh/profiles/web/node_modules/dsh-web-file-uploader` by hand — pnpm owns
 that tree and the next operation rewrites it.
 
-### Git channel (recommended)
+### Tarball channel (recommended)
+
+The profile records the exact asset URL, so moving to a new release needs a
+clean remove + add:
+
+```bash
+# switch to the new release asset
+dsh plugin --profile web remove dsh-web-file-uploader
+dsh plugin --profile web add \
+  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/<version>/dsh-web-file-uploader-<version>.tgz
+```
+
+### Git channel
+
+A git install rebuilds the bundle through the `prepare` script, so pnpm must be
+allowed to run it (see Prerequisites).
 
 ```bash
 # re-resolve the git spec to the newest commit of its default branch
@@ -214,8 +241,8 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 ### Local-directory channel
 
-The checkout must be rebuilt before each `add` when `src/` changed — `lib/` is
-committed, so a clean checkout can be added as-is:
+`lib/` is not committed, so build the checkout before adding it (and rebuild
+whenever `src/` changed):
 
 ```bash
 cd <path-to-checkout> && pnpm build   # regenerates lib/ + client/src

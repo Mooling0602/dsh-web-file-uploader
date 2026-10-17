@@ -120,21 +120,24 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 
 ## 安装方式
 
-插件以**静态 bundle** 形式分发——即持久的 dsh profile 层。包声明了 `dsh.bundle.patch`（见 `cordis.patch.yml`），因此 `dsh plugin --profile web add` 会将其识别为 profile 层。pnpm 支持的任意来源均可：
+插件以**静态 bundle** 形式分发——即持久的 dsh profile 层。**可安装产物是附加在 GitHub Release 上的已构建 tarball**。包声明了 `dsh.bundle.patch`（见 `cordis.patch.yml`），因此 `dsh plugin --profile web add` 会将其识别为 profile 层：
 
 ```bash
-# Git 仓库（推荐分发渠道）
+# GitHub Release tarball（推荐：已构建好）
+dsh plugin --profile web add \
+  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
+
+# npm registry（首次 CI 发布后）
+dsh plugin --profile web add dsh-web-file-uploader
+
+# Git 仓库（安装时重新构建；pnpm 会询问是否允许构建脚本）
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
-# 本地目录（开发用）
+# 本地目录（开发用；先在目录里跑 `pnpm build`）
 dsh plugin --profile web add ../dsh-web-file-uploader
-
-# Tarball
-dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.1.tgz
-
-# npm registry（发布后）
-dsh plugin --profile web add dsh-web-file-uploader
 ```
+
+仓库**只提交源码**：`lib/` 与 `client/src/client.js` 是 git 忽略的构建产物，由 `pnpm build`（以及安装时运行的 `prepare` 脚本）生成。刚从 clone 出来的目录没有 bundle，因此想要开箱即装的包请用 Release tarball（或 npm）；从 git 安装则需允许 pnpm 执行 `prepare` 脚本。tarball URL 会被钉在 profile 里，跨版本更新需要 `remove` 后再 `add` 新 URL。
 
 > **Git 规格说明**：pnpm 的 git 简写是 `github:<owner>/<repo>`（如
 > `github:Mooling0602/dsh-web-file-uploader`）。裸写 `github.com/<owner>/<repo>`
@@ -142,7 +145,7 @@ dsh plugin --profile web add dsh-web-file-uploader
 > `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` 或
 > `https://github.com/Mooling0602/dsh-web-file-uploader.git`。
 
-重启 dsh web 进程并刷新页面。分发细节与「推送 `v*` 标签即自动发布 pre-release」的发布流程见 [PUBLISHING.md](PUBLISHING.md)。
+重启 dsh web 进程并刷新页面。分发细节与「推送裸版本号标签即自动发布 pre-release」的发布流程见 [PUBLISHING.md](PUBLISHING.md)。
 
 ### 更新
 
@@ -150,6 +153,12 @@ dsh plugin --profile web add dsh-web-file-uploader
 `~/.dsh/profiles/web/node_modules`——下次 pnpm 操作会直接覆盖）：
 
 ```bash
+# GitHub Release tarball：URL 被钉住，需要换到新版本资源
+dsh plugin --profile web remove dsh-web-file-uploader
+dsh plugin --profile web add \
+  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/<version>/dsh-web-file-uploader-<version>.tgz
+
+# git 渠道：重新解析分支并在安装时重建
 dsh plugin --profile web update dsh-web-file-uploader
 # 若 lockfile 钉住的解析不肯移动，可以退回重装：
 dsh plugin --profile web remove dsh-web-file-uploader
@@ -200,11 +209,11 @@ dsh-web-file-uploader/
 │   ├── index.ts                # Host 缝隙：webServer 路由 + node:fs/crypto
 │   ├── client-static.ts        # Client 缝隙：XHR/fetch 传输 + 模块 react
 │   └── types.ts                # 手工维护的 dsh 插件 API 类型子集
-├── lib/                        # 构建产物（随仓库提交）：发布用 bundle
+├── lib/                        # 构建产物（git 忽略）：发布用 bundle
 │   ├── index.js                # 编译后的 Host 半（只 import ./core/*）
 │   ├── core/host.js
 │   └── client.js               # Client 核心已内联进 web loader 工厂
-├── client/src/client.js        # 构建产物：dsh.client 扫描目标
+├── client/src/client.js        # 构建产物（git 忽略）：由 src/ 生成
 ├── test/
 │   ├── host.test.ts            # Host 核心回归套件（流式 intake 路径）
 │   ├── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
@@ -223,11 +232,12 @@ dsh-web-file-uploader/
 └── LICENSE                     # MIT
 ```
 
-**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；TypeScript 套件直接运行源码（Node 负责剥离类型），`.mjs` 套件则加载已发布 bundle 与发布日志抽取 CLI。
+**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。两者都被 git 忽略：仓库只有源码，`pnpm install` 会通过 `prepare` 脚本执行同样的构建，发布工作流也会在打包 tarball 前先构建。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；TypeScript 套件直接运行源码（Node 负责剥离类型），`.mjs` 套件则加载已发布 bundle 与发布日志抽取 CLI。
 
 ## 开发状态
 
 - ✅ 静态 bundle：卡片驱动注入、模型感知适配、防重传、i18n UI、带批量删除的设置面板——全部由测试覆盖
+- ✅ 分发：每个裸版本号标签都会跑 CI、构建 bundle，并把可安装 tarball 附加到 GitHub Release（安装端无需构建）
 - ⚠️ `scripts/build.mjs` 中的客户端包装器是对 DSH web 工具链产物的尽力模拟；正式分发前需对照真实 web 构建验证（与官方 `@deepseek-ai/dsh-client-*` 的 `lib/client.js` 对比）
 
 ## 许可证
