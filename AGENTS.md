@@ -117,3 +117,7 @@ writes it. Agents must not invent release entries:
   `.github/workflows/release.yml`; a `v`-prefixed tag does not trigger it — the
   prefix belongs to the release commit subject and the GitHub Release title.
   Never move or delete a published tag — bump the version instead.
+- The `ci` workflow starts with a gate: a single-commit push whose subject
+  starts with `docs:` or `chore:` (scoped forms included) skips
+  checkout/install/typecheck/test/build and finishes green in seconds.
+  Multi-commit pushes and pull requests always run the full gate.
