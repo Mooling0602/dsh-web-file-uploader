@@ -39,7 +39,7 @@ composer. The cards are the source of truth for injection:
 |---|---|
 | Card present | The file's absolute path is injected into **every** user message sent while the card is visible |
 | Card closed (`×`) | The plugin calls the host `remove` RPC — the file is dropped from the pending registry, **no longer injected**, and the file is **kept on disk** so the model can still re-read it from the uploads folder |
-| Card deleted (🗑) | The plugin calls the host `delete` RPC — the file is **permanently removed from the DSH host** and the dedup index is scrubbed |
+| Card deleted (🗑) | The plugin calls the host `delete` RPC — the file is **permanently removed from the DSH host** and the dedup index is scrubbed. Only the card that created the stored copy offers 🗑; a card for a deduplicated re-upload keeps just `×` |
 | Ctrl+V paste | Pasted images ride the native draft-image pipeline — no card is created and the plugin never touches them |
 
 The distinction between `×` and 🗑 is intentional: `×` just stops injecting
@@ -48,6 +48,13 @@ you are **done with the file forever**. Deleting the last reference to a file
 removes it from disk; if another live session still references the same
 deduplicated copy, the file is kept and only this session's reference is
 dropped.
+
+A re-upload resolves to the same stored path (see
+[Deduplication](#deduplication)), so its card borrows a shared copy rather
+than owning one. Those cards hide 🗑 — deleting from one of them would remove a
+file every other reference still uses — and rely on `×`; the settings panel
+handles file-level deletion, where the in-use rule still protects live
+references.
 
 This is a deliberate design decision: the cards persist after sending (unlike
 paste previews that clear on send), so you decide how long a file stays
@@ -176,7 +183,7 @@ own attach button at 2.
 | Action | Host call | File on disk |
 |---|---|---|
 | `×` close | `remove` | **Kept** — model may re-read it |
-| 🗑 delete | `delete` | **Removed permanently** |
+| 🗑 delete | `delete` | **Removed permanently** — offered only on the card that created the stored copy; re-upload cards that reuse that copy hide it |
 
 Closing a card whose upload is **still in flight** asks first, because the bytes
 are still moving and both answers are real: *Cancel upload* aborts the transfer

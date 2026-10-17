@@ -77,10 +77,12 @@ workflow or the release-note script is `ci`, not `feat`.
 - **Toolchain**: TypeScript (`strict`) compiled by `tsc`; every tool script and
   suite is TypeScript run directly through Node's type stripping (Node ≥ 22.19,
   dsh's own engine floor). `pnpm typecheck` checks sources, suites and scripts;
-  `pnpm test` runs `host.test.ts` and `settings-panel.test.ts` against the
-  sources, `bundle.test.ts` rebuilds and then loads the shipped `lib/client.js`
-  through the web loader contract, and `release-notes.test.ts` covers the
-  release-note composition CLI the release workflow uses. `pnpm build`
+  `pnpm test` runs `host.test.ts` against the host core and the browser-free UI
+  suites against the client core (`settings-panel.test.ts` for the settings
+  panel, `cards.test.ts` for the composer attachment cards), `bundle.test.ts`
+  rebuilds and then loads the shipped `lib/client.js` through the web loader
+  contract, and `release-notes.test.ts` covers the release-note composition CLI
+  the release workflow uses. `pnpm build`
   (scripts/build.ts) compiles the host half into `lib/` and inlines the client
   core into the web loader factory (`lib/client.js`, plus the unwrapped
   `client/src/client.js` the dsh.client scan reads).

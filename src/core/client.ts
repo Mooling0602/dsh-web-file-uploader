@@ -48,6 +48,8 @@ export interface FileCard {
   controller: AbortController | null
   confirmCancel: boolean
   savedSize?: number
+  /** The host reused an already stored copy instead of writing these bytes. */
+  dedup?: boolean
 }
 
 /** Environment interactions the client core needs, injected by the seam. */
@@ -183,6 +185,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       copyPath: '复制路径',
       remove: '移除',
       delete: '删除文件（不可找回）',
+      dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
       failed: '失败',
       settingsTitle: '文件上传',
       ttlLabel: '自动清理保留期',
@@ -231,6 +234,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       copyPath: 'Copy path',
       remove: 'Remove',
       delete: 'Delete file (permanent)',
+      dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
       failed: 'Failed',
       settingsTitle: 'File uploads',
       ttlLabel: 'Auto-cleanup retention',
@@ -589,7 +593,12 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
                 store.remove(sessionId, id)
                 unref(sessionId, res.path)
               } else if (entry !== undefined) {
-                store.update(sessionId, id, { status: 'done', path: res.path, savedSize: res.size })
+                store.update(sessionId, id, {
+                  status: 'done',
+                  path: res.path,
+                  savedSize: res.size,
+                  dedup: res.dedup === true,
+                })
               } else {
                 unref(sessionId, res.path)
               }
@@ -686,33 +695,41 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             tFn('copyPath'),
           ),
         )
-        actions.push(
-          react.createElement(
-            'button',
-            {
-              key: 'delete',
-              type: 'button',
-              className: 'dfu-chip-delete',
-              title: tFn('delete'),
-              onClick: () => deleteCard(sessionId, f.id),
-            },
+        // Permanently delete only from the card that created the stored copy.
+        // A re-upload is deduplicated onto the same path, so a trash button on
+        // such a card would delete one shared file that other cards (and other
+        // sessions, including earlier messages) still reference. Those cards
+        // only un-reference (×); file-level deletion stays in the settings
+        // panel, where the in-use rule still protects live references.
+        if (f.dedup !== true) {
+          actions.push(
             react.createElement(
-              'svg',
+              'button',
               {
-                width: 13,
-                height: 13,
-                viewBox: '0 0 24 24',
-                fill: 'none',
-                stroke: 'currentColor',
-                strokeWidth: 1.8,
-                strokeLinecap: 'round',
-                strokeLinejoin: 'round',
-                'aria-hidden': 'true',
+                key: 'delete',
+                type: 'button',
+                className: 'dfu-chip-delete',
+                title: tFn('delete'),
+                onClick: () => deleteCard(sessionId, f.id),
               },
-              react.createElement('path', { d: TRASH_PATH }),
+              react.createElement(
+                'svg',
+                {
+                  width: 13,
+                  height: 13,
+                  viewBox: '0 0 24 24',
+                  fill: 'none',
+                  stroke: 'currentColor',
+                  strokeWidth: 1.8,
+                  strokeLinecap: 'round',
+                  strokeLinejoin: 'round',
+                  'aria-hidden': 'true',
+                },
+                react.createElement('path', { d: TRASH_PATH }),
+              ),
             ),
-          ),
-        )
+          )
+        }
       }
       // While a cancel is in flight the card has nothing left to decide.
       if (f.status !== 'cancelling') {
@@ -727,7 +744,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       chips.push(
         react.createElement(
           'div',
-          { key: f.id, className: 'dfu-chip' },
+          { key: f.id, className: 'dfu-chip', title: f.dedup === true ? tFn('dedupCardHint') : undefined },
           preview,
           react.createElement(
             'div',
