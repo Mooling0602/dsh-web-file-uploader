@@ -2,10 +2,11 @@
 #
 # Push a bare version tag — `<package.json version>` without a `v` prefix, for
 # example 1.0.0-alpha.3 — and this workflow runs the full gate, packs the npm
-# tarball, creates a GitHub Release titled `v<version>` whose body is the
-# `## <version>` section of CHANGELOG.md (flagged as a pre-release for any
-# semver prerelease: alpha, beta, rc, ...) and publishes to npm when the
-# NODE_AUTH_TOKEN secret is configured.
+# tarball, creates a GitHub Release titled `v<version>` whose body is composed
+# from CHANGELOG.md (global Header + the `## <version>` section + global
+# Endfix, with the Full Changelog compare link generated from the previous
+# release tag; flagged as a pre-release for any semver prerelease: alpha, beta,
+# rc, ...) and publishes to npm when the NODE_AUTH_TOKEN secret is configured.
 #
 # The repository commits no build output: the tarball built here is the
 # installable artifact, so a GitHub Release ships a ready-to-install package
@@ -138,16 +139,19 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "tag ${tag}: version ${version}, channel ${channel}, prerelease=${prerelease}"
 
-      - name: Extract the release notes from CHANGELOG.md
+      - name: Compose the release notes from CHANGELOG.md
         id: notes
         shell: bash
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           notes_file="${RUNNER_TEMP}/release-notes.md"
-          node scripts/release-notes.ts "${version}" --output "${notes_file}"
+          # The script composes Header + the version section + Endfix and turns
+          # the Endfix placeholder into the Full Changelog compare link for this
+          # tag's nearest previous release tag (full history is checked out).
+          node scripts/release-notes.ts "${version}" --tag "${TAG}" --output "${notes_file}"
           echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
-          echo "--- release notes (CHANGELOG.md ## ${version}) ---"
+          echo "--- release notes (CHANGELOG.md Header + ## ${version} + Endfix) ---"
           cat "${notes_file}"
 
       - name: Install dependencies
@@ -303,7 +307,7 @@ jobs:
             echo "| version | \`${{ steps.version.outputs.version }}\` |"
             echo "| channel | \`${{ steps.version.outputs.channel }}\` |"
             echo "| pre-release | \`${{ steps.version.outputs.prerelease }}\` |"
-            echo "| release notes | \`CHANGELOG.md\` § ${{ steps.version.outputs.version }} |"
+            echo "| release notes | \`CHANGELOG.md\` Header + § ${{ steps.version.outputs.version }} + Endfix |"
             echo "| release title | \`v${{ steps.version.outputs.version }}\` |"
             echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
             echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"

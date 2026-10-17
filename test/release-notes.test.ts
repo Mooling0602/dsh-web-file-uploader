@@ -2,9 +2,10 @@
 // test/release-notes.test.ts — CLI contract of scripts/release-notes.ts.
 //
 // The release workflow turns the output of this script into the GitHub Release
-// body, so the extraction rules are covered here with fixture changelogs: the
-// version heading forms accepted, the section boundary, and every failure the
-// release gate relies on (missing, empty, duplicated, placeholder).
+// body, so the composition rules are covered here with fixture changelogs: the
+// global Header and Endfix wrappers (titles stripped, the Full Changelog link
+// generated), the version heading forms accepted, the section boundary, and
+// every failure the release gate relies on.
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -14,6 +15,12 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const script = join(root, 'scripts', 'release-notes.ts')
+
+const REPO = 'https://github.com/example/repo'
+const HEADER = `_**Copy the attached plugin package link and paste to dsh to install or update.**_
+
+_**复制插件包链接到 dsh 中即可更新或安装。**_`
+const ENDFIX = '**full_changelog!**'
 
 let pass = 0
 let fail = 0
@@ -28,7 +35,23 @@ const ok = (name: string, condition: boolean, detail?: unknown): void => {
   }
 }
 
-const run = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
+const changelog = (versions: string, header: string | null = HEADER, endfix: string | null = ENDFIX): string => {
+  const sections = ['# CHANGELOG', '', 'Changelog intro.']
+  if (header !== null) sections.push('', '## Header', '', header)
+  if (endfix !== null) sections.push('', '## Endfix', '', endfix)
+  return sections.join('\n') + '\n\n' + versions
+}
+
+const VERSIONS = `## 1.2.3
+
+### Features
+
+- Add a thing in commit \`abcdef1\`.
+
+## 1.2.2
+
+- Older entry.
+`
 
 // Each fixture gets its own directory so `--changelog` exercises the same path
 // the release workflow uses, without touching the real CHANGELOG.md.
@@ -39,104 +62,120 @@ const fixture = (content: string): string => {
   return file
 }
 
-// --- happy path: section content, boundary, and heading forms ----------------
+const run = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
 
-const basic = fixture(`# CHANGELOG
+const compareLink = (previous: string, tag: string): string => `**Full Changelog**: ${REPO}/compare/${previous}...${tag}`
 
-## 1.2.3
+// Every happy-path invocation pins the repo and previous tag so the suite is
+// hermetic; the tag defaults to the bare version.
+const notesArgs = (file: string): string[] => ['--changelog', file, '--repo', REPO, '--previous', '1.2.2']
 
-**Features**
+// --- composition: header first, version section, generated Full Changelog ----
 
-- Add a thing in commit \`abcdef1\`.
-
-## 1.2.2
-
-- Older entry.
-`)
-
-const basicRun = run(['1.2.3', '--changelog', basic])
+const basic = fixture(changelog(VERSIONS))
+const basicRun = run(['1.2.3', ...notesArgs(basic)])
 ok('exits 0 for an existing section', basicRun.status === 0, basicRun.stderr)
-ok(
-  'returns the section verbatim',
-  basicRun.stdout === '**Features**\n\n- Add a thing in commit `abcdef1`.\n',
-  basicRun.stdout,
-)
-ok('stops at the next level-2 heading', !basicRun.stdout.includes('Older entry'), basicRun.stdout)
+ok('puts the Header content first', basicRun.stdout.startsWith(HEADER + '\n\n'), basicRun.stdout.slice(0, 60))
+ok('omits the Header title', !basicRun.stdout.includes('## Header'), basicRun.stdout)
+ok('keeps the version section body', basicRun.stdout.includes('### Features') && basicRun.stdout.includes('Add a thing in commit `abcdef1`.'), basicRun.stdout)
+ok('omits the Endfix title', !basicRun.stdout.includes('## Endfix'), basicRun.stdout)
+ok('ends with the generated Full Changelog link', basicRun.stdout.trimEnd().endsWith(compareLink('1.2.2', '1.2.3')), basicRun.stdout)
+ok('leaves no placeholder behind', !basicRun.stdout.includes('full_changelog!'), basicRun.stdout)
+{
+  const at = (text: string) => basicRun.stdout.indexOf(text)
+  ok('orders header, section and link', at(HEADER) === 0 && at('### Features') > 0 && at('**Full Changelog**') > at('### Features'), [at(HEADER), at('### Features'), at('**Full Changelog**')])
+}
 
-const bracketed = fixture(`# CHANGELOG
+// --- tag and heading forms ---------------------------------------------------
 
-## [v1.2.3] - 2026-10-17
+const overrideTag = run(['1.2.3', '--tag', 'v9.9.9', ...notesArgs(basic)])
+ok('uses --tag in the compare link', overrideTag.status === 0 && overrideTag.stdout.trimEnd().endsWith(compareLink('1.2.2', 'v9.9.9')), overrideTag.stdout)
+
+const bracketed = fixture(changelog(`## [v1.2.3] - 2026-10-17
 
 - Bracket and date heading.
-`)
-const bracketedRun = run(['1.2.3', '--changelog', bracketed])
-ok('accepts a bracketed, v-prefixed, dated heading', bracketedRun.status === 0, bracketedRun.stderr)
-ok('keeps the body of the dated heading', bracketedRun.stdout.trim() === '- Bracket and date heading.', bracketedRun.stdout)
+`))
+const bracketedRun = run(['1.2.3', ...notesArgs(bracketed)])
+ok('accepts a bracketed, v-prefixed, dated heading', bracketedRun.status === 0 && bracketedRun.stdout.includes('- Bracket and date heading.'), bracketedRun.stderr)
 
-const level3 = fixture(`# CHANGELOG
+const level3 = fixture(changelog(`## 1.2.3
 
-## 1.2.3
+### Fixes
 
-**Fixes**
+#### Settings
 
-### Settings
-
-- Level-3 headings stay inside the notes.
-`)
-const level3Run = run(['1.2.3', '--changelog', level3])
-ok('keeps level-3 headings inside the section', level3Run.status === 0 && level3Run.stdout.includes('### Settings'), level3Run.stdout)
+- Level-4 headings stay inside the notes.
+`))
+const level3Run = run(['1.2.3', ...notesArgs(level3)])
+ok('keeps deeper headings inside the section', level3Run.status === 0 && level3Run.stdout.includes('#### Settings'), level3Run.stdout)
 
 // --- failure gates used by the release workflow -----------------------------
 
-const missing = run(['9.9.9', '--changelog', basic])
+const missing = run(['9.9.9', ...notesArgs(basic)])
 ok('fails on a missing version section', missing.status === 1, missing.status)
 ok('names the missing version', /no "## 9\.9\.9" section/.test(missing.stderr), missing.stderr)
 
-const empty = fixture(`# CHANGELOG
-
-## 1.2.3
+const empty = fixture(changelog(`## 1.2.3
 
 ## 1.2.2
 
 - Older entry.
-`)
-const emptyRun = run(['1.2.3', '--changelog', empty])
+`))
+const emptyRun = run(['1.2.3', ...notesArgs(empty)])
 ok('fails on an empty section', emptyRun.status === 1, emptyRun.status)
 ok('says the section is empty', /empty/.test(emptyRun.stderr), emptyRun.stderr)
 
-const placeholder = fixture(`# CHANGELOG
-
-## 1.2.3
+const placeholder = fixture(changelog(`## 1.2.3
 
 - Add the file in commit hash123.
-`)
-const placeholderRun = run(['1.2.3', '--changelog', placeholder])
+`))
+const placeholderRun = run(['1.2.3', ...notesArgs(placeholder)])
 ok('fails on the hash123 placeholder', placeholderRun.status === 1, placeholderRun.status)
 ok('tells the author to replace the placeholder', /hash123/.test(placeholderRun.stderr), placeholderRun.stderr)
 
-const duplicated = fixture(`# CHANGELOG
-
-## 1.2.3
+const duplicated = fixture(changelog(`## 1.2.3
 
 - First.
 
 ## 1.2.3
 
 - Second.
-`)
-const duplicatedRun = run(['1.2.3', '--changelog', duplicated])
-ok('fails on duplicated version sections', duplicatedRun.status === 1, duplicatedRun.status)
+`))
+const duplicatedRun = run(['1.2.3', ...notesArgs(duplicated)])
+ok('fails on duplicated version sections', duplicatedRun.status === 1 && /keep exactly one/.test(duplicatedRun.stderr), duplicatedRun.stderr)
+
+const noHeader = fixture(changelog(VERSIONS, null))
+const noHeaderRun = run(['1.2.3', ...notesArgs(noHeader)])
+ok('fails without a Header section', noHeaderRun.status === 1 && /no "## Header" section/.test(noHeaderRun.stderr), noHeaderRun.stderr)
+
+const emptyHeader = fixture(changelog(VERSIONS, ''))
+const emptyHeaderRun = run(['1.2.3', ...notesArgs(emptyHeader)])
+ok('fails on an empty Header section', emptyHeaderRun.status === 1 && /"## Header" section in CHANGELOG.md is empty/.test(emptyHeaderRun.stderr), emptyHeaderRun.stderr)
+
+const noEndfix = fixture(changelog(VERSIONS, HEADER, null))
+const noEndfixRun = run(['1.2.3', ...notesArgs(noEndfix)])
+ok('fails without an Endfix section', noEndfixRun.status === 1 && /no "## Endfix" section/.test(noEndfixRun.stderr), noEndfixRun.stderr)
+
+const bareEndfix = fixture(changelog(VERSIONS, HEADER, 'Nothing to link.'))
+const bareEndfixRun = run(['1.2.3', ...notesArgs(bareEndfix)])
+ok('fails when Endfix carries no placeholder', bareEndfixRun.status === 1 && /must contain \*\*full_changelog!\*\*/.test(bareEndfixRun.stderr), bareEndfixRun.stderr)
+
+const duplicatedHeader = fixture(`# CHANGELOG\n\n## Header\n\n${HEADER}\n\n## Header\n\n${HEADER}\n\n## Endfix\n\n${ENDFIX}\n\n${VERSIONS}`)
+const duplicatedHeaderRun = run(['1.2.3', ...notesArgs(duplicatedHeader)])
+ok('fails on duplicated Header sections', duplicatedHeaderRun.status === 1 && /keep exactly one/.test(duplicatedHeaderRun.stderr), duplicatedHeaderRun.stderr)
 
 // --- CLI surface ------------------------------------------------------------
 
 const outputDir = mkdtempSync(join(tmpdir(), 'dfu-changelog-out-'))
 const outputFile = join(outputDir, 'release-notes.md')
-const written = run(['1.2.3', '--changelog', basic, '--output', outputFile])
-ok('writes --output with a trailing newline', written.status === 0 && readFileSync(outputFile, 'utf8') === '**Features**\n\n- Add a thing in commit `abcdef1`.\n', written.stderr)
+const written = run(['1.2.3', '--changelog', basic, '--output', outputFile, '--repo', REPO, '--previous', '1.2.2'])
+ok('writes --output with a trailing newline', written.status === 0
+  && readFileSync(outputFile, 'utf8') === `${HEADER}\n\n### Features\n\n- Add a thing in commit \`abcdef1\`.\n\n${compareLink('1.2.2', '1.2.3')}\n`,
+  written.stderr)
 ok('keeps stdout empty when writing a file', written.stdout === '', written.stdout)
 
 const noVersion = run(['--changelog', basic])
-ok('fails without a version argument', noVersion.status === 1 && /usage:/.test(noVersion.stderr), noVersion.stderr)
+ok('fails without a version argument', noVersion.status === 1 && /usage: node scripts\/release-notes\.ts/.test(noVersion.stderr), noVersion.stderr)
 
 const missingFile = run(['1.2.3', '--changelog', join(tmpdir(), 'dfu-does-not-exist', 'CHANGELOG.md')])
 ok('fails when the changelog file is missing', missingFile.status === 1 && /cannot read/.test(missingFile.stderr), missingFile.stderr)
@@ -144,8 +183,14 @@ ok('fails when the changelog file is missing', missingFile.status === 1 && /cann
 const unknownOption = run(['1.2.3', '--changelog', basic, '--wat'])
 ok('fails on an unknown option', unknownOption.status === 1 && /unknown option/.test(unknownOption.stderr), unknownOption.stderr)
 
+const missingTagValue = run(['1.2.3', '--changelog', basic, '--tag'])
+ok('fails when --tag has no value', missingTagValue.status === 1 && /--tag needs a tag name/.test(missingTagValue.stderr), missingTagValue.stderr)
+
+const extraArgument = run(['1.2.3', '2.0.0', ...notesArgs(basic)])
+ok('fails on an extra argument', extraArgument.status === 1 && /unexpected extra argument/.test(extraArgument.stderr), extraArgument.stderr)
+
 const help = run(['--help'])
-ok('prints usage for --help', help.status === 0 && /usage:/.test(help.stdout), help.stdout)
+ok('prints usage for --help', help.status === 0 && /usage: node scripts\/release-notes\.ts/.test(help.stdout), help.stdout)
 
 console.log(results.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
