@@ -1,5 +1,5 @@
 // GENERATED — do not edit. Edit src/core/client.ts or this template, then
-// run `node scripts/build.mjs` to regenerate client/src/client.js.
+// run `node scripts/build.ts` to regenerate client/src/client.js.
 // __CORE__
 
 // Guarded browser style insertion (the web build may provide a cleaner seam).
@@ -30,7 +30,7 @@ const ensureStyles = (() => {
   }
 })()
 
-// The build wrapper (scripts/build.mjs) replaces the marked line below with
+// The build wrapper (scripts/build.ts) replaces the marked line below with
 // `let react = require("react")` (resolved by the web module loader's module
 // map). Standalone (unwrapped) consumers keep the null fallback and apply()
 // becomes a no-op. The marker is load-bearing: injecting a plain

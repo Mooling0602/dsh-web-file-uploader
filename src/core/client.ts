@@ -1,7 +1,7 @@
 // dsh-web-file-uploader — canonical CLIENT core (transport-agnostic)
 //
 // Single source of truth for the client UI + upload flow, inlined into the
-// static client module (client/src/client.js) by scripts/build.mjs.
+// static client module (client/src/client.js) by scripts/build.ts.
 //
 // All environment interactions are injected through `deps`:
 //   react              React namespace (injected by the build wrapper)

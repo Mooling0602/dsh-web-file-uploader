@@ -145,7 +145,7 @@ jobs:
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           notes_file="${RUNNER_TEMP}/release-notes.md"
-          node scripts/release-notes.mjs "${version}" --output "${notes_file}"
+          node scripts/release-notes.ts "${version}" --output "${notes_file}"
           echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
           echo "--- release notes (CHANGELOG.md ## ${version}) ---"
           cat "${notes_file}"

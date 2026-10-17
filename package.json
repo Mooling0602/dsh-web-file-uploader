@@ -42,14 +42,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "test": "node test/host.test.ts && node test/settings-panel.test.ts && node test/bundle.test.mjs && node test/release-notes.test.mjs",
-    "prepare": "node scripts/build.mjs",
-    "prepublishOnly": "node scripts/build.mjs"
+    "test": "node test/host.test.ts && node test/settings-panel.test.ts && node test/bundle.test.ts && node test/release-notes.test.ts",
+    "prepare": "node scripts/build.ts",
+    "prepublishOnly": "node scripts/build.ts"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "dsh": {
     "bundle": {

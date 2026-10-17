@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/sync-profile.mjs — copy every shipped file into an installed profile
+// scripts/sync-profile.ts — copy every shipped file into an installed profile
 // package, then verify the result.
 //
 // The shipped lib/ is self-contained (the compiled host half imports only
@@ -9,7 +9,7 @@
 // because an editor who patches them would see nothing change — the same
 // "loads stale code" failure this script exists to prevent.
 //
-// Usage: node scripts/sync-profile.mjs [target-package-dir]
+// Usage: node scripts/sync-profile.ts [target-package-dir]
 //   default target: ~/.dsh/profiles/web/node_modules/dsh-web-file-uploader
 
 import { createHash } from 'node:crypto'
@@ -37,7 +37,7 @@ const FILES = [
 /** Layouts this script used to ship; removed from the target when present. */
 const STALE = ['src', 'scripts']
 
-const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
+const sha256 = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex')
 
 if (!existsSync(target)) {
   console.error(`sync-profile: target does not exist: ${target}`)
@@ -64,7 +64,7 @@ for (const rel of FILES) {
 // inside the target and compare it with this checkout — a partial copy would
 // otherwise only surface at runtime, as a missing method on the core.
 for (const match of readFileSync(join(target, 'lib', 'index.js'), 'utf8').matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
-  const spec = match[1]
+  const spec = match[1] as string
   const installed = resolve(join(target, 'lib'), spec)
   const checkout = resolve(join(root, 'lib'), spec)
   const ok = existsSync(installed) && existsSync(checkout) && sha256(installed) === sha256(checkout)

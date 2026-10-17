@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/release-notes.mjs — extract one version's section from CHANGELOG.md.
+// scripts/release-notes.ts — extract one version's section from CHANGELOG.md.
 //
 // The release workflow copies the extracted section verbatim into the GitHub
 // Release body, so this script is the single gate that keeps a release tag and
@@ -8,9 +8,9 @@
 // placeholder.
 //
 // Usage:
-//   node scripts/release-notes.mjs <version>                    # stdout
-//   node scripts/release-notes.mjs <version> --output <file>    # write file
-//   node scripts/release-notes.mjs <version> --changelog <file> # other source
+//   node scripts/release-notes.ts <version>                    # stdout
+//   node scripts/release-notes.ts <version> --output <file>    # write file
+//   node scripts/release-notes.ts <version> --changelog <file> # other source
 //
 // The section starts at a level-2 heading whose text is the version (optionally
 // bracketed, v-prefixed, and followed by a date, e.g. `## [1.2.3] - 2026-01-01`)
@@ -24,13 +24,15 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const defaultChangelog = join(root, 'CHANGELOG.md')
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /** Extract and validate the notes for `version` from a CHANGELOG body. */
-const extractReleaseNotes = (changelog, version) => {
+const extractReleaseNotes = (changelog: string, version: string): string => {
   const heading = new RegExp(`^##\\s+\\[?v?${escapeRegex(version)}\\]?(?:\\s+.*)?$`)
   const lines = changelog.split(/\r?\n/)
-  const starts = []
+  const starts: number[] = []
   lines.forEach((line, index) => {
     if (heading.test(line.trim())) starts.push(index)
   })
@@ -38,8 +40,8 @@ const extractReleaseNotes = (changelog, version) => {
   if (starts.length === 0) throw new Error(`CHANGELOG.md has no "## ${version}" section`)
   if (starts.length > 1) throw new Error(`CHANGELOG.md has ${starts.length} "## ${version}" sections; keep exactly one`)
 
-  const body = []
-  for (const line of lines.slice(starts[0] + 1)) {
+  const body: string[] = []
+  for (const line of lines.slice((starts[0] as number) + 1)) {
     if (/^#{1,2}\s/.test(line.trim())) break
     body.push(line)
   }
@@ -55,23 +57,23 @@ const extractReleaseNotes = (changelog, version) => {
   return notes
 }
 
-const usage = 'usage: node scripts/release-notes.mjs <version> [--output <file>] [--changelog <file>]'
+const usage = 'usage: node scripts/release-notes.ts <version> [--output <file>] [--changelog <file>]'
 
-const main = () => {
+const main = (): void => {
   const args = process.argv.slice(2)
-  let version = null
-  let output = null
+  let version: string | null = null
+  let output: string | null = null
   let changelogFile = defaultChangelog
 
   for (let index = 0; index < args.length; index++) {
-    const arg = args[index]
+    const arg = args[index] as string
     if (arg === '--output' || arg === '-o') {
-      output = args[++index]
+      output = args[++index] ?? null
       if (!output) throw new Error('--output needs a file path')
     } else if (arg.startsWith('--output=')) {
       output = arg.slice('--output='.length)
     } else if (arg === '--changelog' || arg === '-c') {
-      changelogFile = args[++index]
+      changelogFile = args[++index] ?? ''
       if (!changelogFile) throw new Error('--changelog needs a file path')
     } else if (arg.startsWith('--changelog=')) {
       changelogFile = arg.slice('--changelog='.length)
@@ -89,11 +91,11 @@ const main = () => {
 
   if (!version) throw new Error(usage)
 
-  let changelog
+  let changelog = ''
   try {
     changelog = readFileSync(changelogFile, 'utf8')
   } catch (error) {
-    throw new Error(`cannot read ${changelogFile}: ${error.message}`)
+    throw new Error(`cannot read ${changelogFile}: ${errorMessage(error)}`)
   }
   const notes = extractReleaseNotes(changelog, version)
 
@@ -108,6 +110,6 @@ const main = () => {
 try {
   main()
 } catch (error) {
-  console.error(`release-notes: ${error.message}`)
+  console.error(`release-notes: ${errorMessage(error)}`)
   process.exit(1)
 }

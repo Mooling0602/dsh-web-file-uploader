@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// test/release-notes.test.mjs — CLI contract of scripts/release-notes.mjs.
+// test/release-notes.test.ts — CLI contract of scripts/release-notes.ts.
 //
 // The release workflow turns the output of this script into the GitHub Release
 // body, so the extraction rules are covered here with fixture changelogs: the
@@ -13,12 +13,12 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const script = join(root, 'scripts', 'release-notes.mjs')
+const script = join(root, 'scripts', 'release-notes.ts')
 
 let pass = 0
 let fail = 0
-const results = []
-const ok = (name, condition, detail) => {
+const results: string[] = []
+const ok = (name: string, condition: boolean, detail?: unknown): void => {
   if (condition) {
     pass++
     results.push('PASS  ' + name)
@@ -28,11 +28,11 @@ const ok = (name, condition, detail) => {
   }
 }
 
-const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
+const run = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
 
 // Each fixture gets its own directory so `--changelog` exercises the same path
 // the release workflow uses, without touching the real CHANGELOG.md.
-const fixture = (content) => {
+const fixture = (content: string): string => {
   const dir = mkdtempSync(join(tmpdir(), 'dfu-changelog-'))
   const file = join(dir, 'CHANGELOG.md')
   writeFileSync(file, content)
