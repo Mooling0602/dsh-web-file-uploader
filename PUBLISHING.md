@@ -17,10 +17,10 @@ dsh plugin --profile web add ../dsh-web-file-uploader
 # Git repository (recommended for distribution)
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
-# Tarball
-dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.1.tgz
+# Tarball from a GitHub Release (name carries the package version)
+dsh plugin --profile web add ./dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
-# npm registry (requires publishing, see below)
+# npm registry (after the first CI publish, see Releases)
 dsh plugin --profile web add dsh-web-file-uploader
 ```
 
@@ -29,7 +29,6 @@ dsh plugin --profile web add dsh-web-file-uploader
 > "non-existent directory" warning. Alternatives:
 > `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` or
 > `https://github.com/Mooling0602/dsh-web-file-uploader.git`.
-```
 
 After installing, **restart the dsh web process** and refresh the page.
 
@@ -71,10 +70,11 @@ plugin issue** — it is a pnpm store-version mismatch in the web profile:
 
 ## Releases
 
-Releases are cut by CI — `.github/workflows/release.yml` — from version tags.
-The only manual input is the maintainer-written `CHANGELOG.md` entry: the
-workflow copies its `## <version>` section verbatim into the GitHub Release
-body, so no notes are generated from commits or PRs.
+Releases are cut by CI — `.github/workflows/release.yml` — from **bare version
+tags** (`1.0.0-alpha.3`, no `v` prefix). The only manual input is the
+maintainer-written `CHANGELOG.md` entry: the workflow copies its `## <version>`
+section verbatim into the GitHub Release body, so no notes are generated from
+commits or PRs.
 
 ### Cutting a release
 
@@ -86,16 +86,21 @@ A `v`-prefixed tag does not trigger the workflow. Two steps:
 1. Add the release's section to `CHANGELOG.md` and commit it:
 
    ```markdown
-   ## 1.0.0-alpha.2
+   ## 1.0.0-alpha.3
 
    **CI/CD**
 
-   - Add CHANGELOG.md and improve the release workflow in commit `167d6f6`.
+   - Add CHANGELOG.md and improve the release workflow in commit 167d6f6.
    ```
+
+   The heading is the exact bare version, and commit short hashes stay plain
+   text (no backticks) so GitHub renders them as commit links. Replace the
+   template's `hash123` placeholder before tagging; the workflow rejects a
+   missing, empty, or duplicated section and any leftover `hash123`.
 
    ```bash
    git add CHANGELOG.md
-   git commit -m "docs: update the 1.0.0-alpha.2 changelog"
+   git commit -m "docs: update the 1.0.0-alpha.3 changelog"
    ```
 
 2. Bump the version, commit as `release: v<version>`, and tag the bare
@@ -120,8 +125,8 @@ A `v`-prefixed tag does not trigger the workflow. Two steps:
 commit and the annotated bare tag are created explicitly, so the tag never
 picks up the `v` prefix. The workflow then:
 
-1. rejects a tag that does not match `package.json`, is not valid semver, or
-   whose commit is not reachable from `main`;
+1. rejects a tag that carries a `v` prefix, does not match `package.json`, is
+   not valid semver, or whose commit is not reachable from `main`;
 2. extracts the `## <version>` section from `CHANGELOG.md` and fails when it is
    missing, empty, duplicated, or still contains the `hash123` placeholder;
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
@@ -146,7 +151,8 @@ node scripts/release-notes.mjs 1.0.0-alpha.3
 ```
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its
-tarball and notes refreshed and an already-published npm version is skipped.
+title, tarball, and notes refreshed, and an already-published npm version is
+skipped.
 
 ### npm credentials (optional)
 
@@ -165,9 +171,11 @@ configure this repository and `release.yml` on npmjs.com and drop the secret
 ### Manual / dry-run release
 
 *Actions → release → Run workflow* releases an existing tag, which is how a
-release that failed midway is retried. Set `dry_run: true` to run every check,
-the build and the pack (including the tarball artifact) without creating a
-release or publishing — useful to validate the pipeline or a suspicious build.
+release that failed midway is retried. The `tag` input takes the bare version
+tag (`1.0.0-alpha.3`); a `v`-prefixed tag is rejected. Set `dry_run: true` to
+run every check, the build and the pack (including the tarball artifact)
+without creating a release or publishing — useful to validate the pipeline or
+a suspicious build.
 
 ### Manual publish (debugging only)
 
