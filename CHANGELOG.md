@@ -9,4 +9,4 @@ changelogs is not included. For AI agents, add missing commit short-hash (replac
 
 **CI/CD**
 
-- Add CHANGELOG.md and improve release workflow in commits `167d6f6` and `6654cdd`.
+- Add CHANGELOG.md and improve release workflow in commits 167d6f6 and 6654cdd.
