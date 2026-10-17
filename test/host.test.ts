@@ -274,6 +274,25 @@ const imageFolderContents = foldFolderNames()
 ok('native images do not move into the fold folder', imageFolderContents.every((c) => !c.includes('pic-a.png') && !c.includes('pic-b.png')), imageFolderContents)
 ok('the two text files still folded', imageFolderContents.some((c) => c.includes('img-text-a.txt') && c.includes('img-text-b.txt')), imageFolderContents)
 
+// A dedup card shares the file a fold is about to move; its injected path must
+// follow the move instead of going stale on the old root path.
+cfg = { ttl: '7d', foldThreshold: 2 }
+const S7 = 'sess-fold-shared-ref'
+await streamUpload(core, S7, 'shared.txt', 'text/plain', 'shared-content')
+await streamUpload(core, S7, 'shared-copy.txt', 'text/plain', 'shared-content')
+await streamUpload(core, S7, 'other.txt', 'text/plain', 'other-content')
+const shareDecision = await runPreStep(S7)
+const shareText = injectText(shareDecision)
+const shareLines = shareText.split('\n').filter((line) => line.startsWith('- '))
+ok('the dedup card folds together with the file it shares', shareLines.length === 1, shareLines)
+ok('the folder line counts distinct files only', shareLines[0].includes('2 uploaded files in this folder'), shareLines[0])
+const s7FolderName = foldFolderNames().find(
+  (n) => !n.endsWith('-existing') && existsSync(uploadsPath + '/' + n + '/other.txt'),
+)
+const s7Folder = s7FolderName ? uploadsPath + '/' + s7FolderName : ''
+ok('the fold moved both new files', existsSync(s7Folder + '/shared.txt') && existsSync(s7Folder + '/other.txt'))
+ok('no stale root path is injected for the dedup card', !shareText.includes(uploadsPath + '/shared.txt'), shareText)
+
 // A stale fold folder from a previous run is unpacked on startup.
 const orphan = uploadsPath + '/2020-01-02-03-04-05'
 mkdirSync(orphan, { recursive: true })

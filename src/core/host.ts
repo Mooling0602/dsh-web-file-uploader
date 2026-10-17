@@ -354,6 +354,17 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     }
   }
 
+  // A fold/unfold moves a stored file: every live reference to it — including
+  // dedup cards in other sessions that share the copy — must follow, or its
+  // injected path (and delete safety check) would point at a stale location.
+  function rewritePendingPaths(from: string, to: string): void {
+    for (const row of pending.values()) {
+      for (const entry of row) {
+        if (entry.abs === from) entry.abs = to
+      }
+    }
+  }
+
   // --- intake policy shared by both transports -------------------------------
 
   // Reuse the stored copy of identical content. Returns the shared result, or
@@ -845,7 +856,9 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         log('dfu fold move failed:', entry.abs, moved && moved.error)
         return false
       }
-      await rewriteIndexPath(entry.abs, target)
+      const from = entry.abs
+      await rewriteIndexPath(from, target)
+      rewritePendingPaths(from, target)
       entry.abs = target
       return true
     } catch (err) {
@@ -924,7 +937,10 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
           if (!target) continue
           try {
             const moved = typeof deps.moveFile === 'function' ? await deps.moveFile(from, target) : null
-            if (moved && moved.ok) await rewriteIndexPath(from, target)
+            if (moved && moved.ok) {
+              await rewriteIndexPath(from, target)
+              rewritePendingPaths(from, target)
+            }
           } catch (err) {
             log('dfu unfold move failed:', errText(err))
           }
@@ -1032,7 +1048,10 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
           if (!target) continue
           try {
             const moved = typeof deps.moveFile === 'function' ? await deps.moveFile(from, target) : null
-            if (moved && moved.ok) await rewriteIndexPath(from, target)
+            if (moved && moved.ok) {
+              await rewriteIndexPath(from, target)
+              rewritePendingPaths(from, target)
+            }
           } catch {
             // best effort
           }
@@ -1190,10 +1209,12 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       const blocks: Array<{ type: string; attachment?: unknown; text?: string }> = []
       const folderLines: string[] = []
       const pathLines: string[] = []
-      let newFolderFiles = 0
+      const filesInFolder = new Set<string>()
       for (const entry of row) {
         if (state && state.newFolder && entry.abs.indexOf(state.newFolder + '/') === 0) {
-          newFolderFiles += 1
+          // Count distinct files: dedup cards sharing a folded copy must not
+          // inflate the count, and they are covered by the folder line.
+          filesInFolder.add(entry.abs)
           continue
         }
         if (nativeImage(entry)) {
@@ -1212,8 +1233,8 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         if (state && state.existingFolder && entry.dedup === true) continue
         pathLines.push('- ' + entry.abs)
       }
-      if (newFolderFiles > 0 && state && state.newFolder) {
-        folderLines.push('- ' + state.newFolder + '/ \u2014 ' + newFolderFiles + ' uploaded files in this folder; list it with your tools.')
+      if (filesInFolder.size > 0 && state && state.newFolder) {
+        folderLines.push('- ' + state.newFolder + '/ \u2014 ' + filesInFolder.size + ' uploaded files in this folder; list it with your tools.')
       }
       if (state && state.existingFolder && existingGroup.length > 0) {
         folderLines.push('- ' + state.existingFolder + '/paths.txt \u2014 one uploaded file path per line.')
