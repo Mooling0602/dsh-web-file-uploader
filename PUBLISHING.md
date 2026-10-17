@@ -16,8 +16,8 @@ only. Any pnpm-supported source works — **no npm account is required**:
 dsh plugin --profile web add \
   https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
-# npm registry (after the trusted-publishing setup; pre-releases live under
-# the `next` tag until a stable release moves `latest`)
+# npm registry (after the first manual publish; pre-releases live under the
+# `next` tag until a stable release moves `latest`)
 dsh plugin --profile web add dsh-web-file-uploader@next
 
 # Git repository (rebuilds on install through the prepare script)
@@ -26,6 +26,10 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 # Local directory (fastest for development; run pnpm build there first)
 dsh plugin --profile web add ../dsh-web-file-uploader
 ```
+
+The npm channel starts with the first manual publish (see [npm
+publishing](#npm-publishing-oidc-trusted-publishing)); the release tarball
+works before that.
 
 > **Git spec note**: pnpm's git shorthand is `github:<owner>/<repo>`; a bare
 > `github.com/<owner>/<repo>` is treated as a local directory and fails with a

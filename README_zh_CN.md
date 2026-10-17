@@ -146,6 +146,8 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 dsh plugin --profile web add ../dsh-web-file-uploader
 ```
 
+npm 渠道从首次手动发布开始提供（见 `PUBLISHING.md`）；在那之前请使用上面的 GitHub Release tarball。
+
 仓库**只提交源码**：`lib/` 与 `client/src/client.js` 是 git 忽略的构建产物，由 `pnpm build`（以及安装时运行的 `prepare` 脚本）生成。刚从 clone 出来的目录没有 bundle，因此想要开箱即装的包请用 Release tarball（或 npm）；从 git 安装则需允许 pnpm 执行 `prepare` 脚本。tarball URL 会被钉在 profile 里，跨版本更新需要 `remove` 后再 `add` 新 URL。
 
 > **Git 规格说明**：pnpm 的 git 简写是 `github:<owner>/<repo>`（如
