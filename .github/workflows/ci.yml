@@ -10,14 +10,42 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # A single-commit `docs:` / `chore:` push (scoped forms such as
+      # `chore(release):` included) cannot change the shipped bundle, so the
+      # expensive steps are skipped and the run finishes green in seconds.
+      # Multi-commit pushes always run: the head subject alone cannot prove the
+      # other commits are docs/chore. Pull requests always run.
+      - name: Decide whether the full gate is needed
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          run=true
+          count="$(jq '(.commits // []) | length' "${GITHUB_EVENT_PATH}")"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ]; then
+            subject="$(jq -r '(.head_commit.message // "") | split("\n")[0]' "${GITHUB_EVENT_PATH}")"
+            case "${subject}" in
+              docs:*|docs\(*|chore:*|chore\(*) run=false ;;
+            esac
+          fi
+          echo "run=${run}" >> "${GITHUB_OUTPUT}"
+          echo "full CI required: ${run} (${GITHUB_EVENT_NAME}, ${count} commit(s))"
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
       - uses: pnpm/action-setup@v4
+        if: steps.gate.outputs.run == 'true'
         with:
           version: 12
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
         with:
           node-version: 24
       - run: pnpm install
+        if: steps.gate.outputs.run == 'true'
       - run: pnpm typecheck
+        if: steps.gate.outputs.run == 'true'
       - run: pnpm test
+        if: steps.gate.outputs.run == 'true'
       - run: pnpm build
+        if: steps.gate.outputs.run == 'true'
