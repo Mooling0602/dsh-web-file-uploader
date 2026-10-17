@@ -75,15 +75,24 @@ Everything a **human user sees in the UI** is localized through the app's
 `CHANGELOG.md` is the source of the GitHub Release body, and the maintainer
 writes it. Agents must not invent release entries:
 
-- Do not create, rewrite, prune, or auto-generate changelog entries unless the
-  maintainer explicitly asks for that exact edit. `docs:`/`ci:` changes that
-  ship before a release still get their entry from the maintainer.
-- Running `node scripts/release-notes.mjs <version>` to preview the notes is
-  fine, and so is reporting a stale `hash123` placeholder or a missing section.
-  Fixing those is a maintainer decision, not an agent one.
-- Keep the section format the maintainer uses: an exact `## <version>` heading,
-  bold category groups (for example `**CI/CD**`), and bullets that point at the
-  commit short hash.
+- Do not create, rewrite, prune, or auto-generate changelog entries. `docs:` /
+  `ci:` changes that ship before a release still get their entry from the
+  maintainer.
+- The one mechanical edit agents may make is the template's `hash123`
+  placeholder, when the maintainer prepares a release: replace it with the
+  short hash(es) of the commits the entry describes and leave the rest of the
+  entry untouched. Report a missing or malformed section instead of writing
+  one.
+- Write commit short hashes as **plain text, never in backticks or any other
+  code formatting**. GitHub autolinks bare short hashes in the rendered
+  release body; code formatting suppresses the link.
+- Preview what the workflow will publish with
+  `node scripts/release-notes.mjs <version>`. The release workflow rejects a
+  missing, empty, or duplicated `## <version>` section and any remaining
+  `hash123` placeholder.
+- Keep the section format the maintainer uses: an exact `## <version>`
+  heading, bold category groups (for example `**CI/CD**`), and bullets that
+  point at the commit short hash.
 
 ## Workflow notes
 
