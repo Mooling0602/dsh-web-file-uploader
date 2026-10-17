@@ -93,10 +93,12 @@ workflow or the release-note script is `ci`, not `feat`.
   `prepare` script runs that build on `pnpm install`, on git installs and before
   packing, and the installable artifact is the `npm pack` tarball attached to
   the GitHub Release. A tag push also publishes the package to npm through OIDC
-  trusted publishing — no npm token is stored, and the package's first publish
-  is the manual bootstrap documented in `PUBLISHING.md`. Rebuild before
-  hot-patching a profile or adding a local directory, and never commit the
-  generated files.
+  trusted publishing when the `NPM_PUBLISH_ENABLED` repository variable is
+  `true` — no npm token is stored, and the package's first publish is the
+  manual bootstrap documented in `PUBLISHING.md`; the variable stays unset
+  until that bootstrap and the trusted-publisher setup are complete. Rebuild
+  before hot-patching a profile or adding a local directory, and never commit
+  the generated files.
 - **Installed profile hot-patch**: run `node scripts/sync-profile.ts` rather
   than copying `lib/` by hand. `lib/` is self-contained (the host half imports
   only `./core/*`), so a full copy of it is enough.

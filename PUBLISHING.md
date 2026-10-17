@@ -163,10 +163,12 @@ picks up the `v` prefix. The workflow then:
    notes, with the tarball attached. Any semver prerelease
    (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a **pre-release**; a
    final `X.Y.Z` release is marked latest;
-6. publishes the package to npm through OIDC trusted publishing — this
-   repository stores no npm token; prereleases use `--tag next` so `latest`
-   keeps pointing at the last stable version, final releases use `latest`;
-   trusted publishing signs the provenance attestation automatically;
+6. publishes the package to npm through OIDC trusted publishing when the
+   `NPM_PUBLISH_ENABLED` repository variable is `true` — this repository
+   stores no npm token; prereleases use `--tag next` so `latest` keeps pointing
+   at the last stable version, final releases use `latest`; trusted publishing
+   signs the provenance attestation automatically; while the variable is
+   unset, the step logs a notice and skips;
 7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
@@ -235,10 +237,34 @@ Three one-time steps make it work:
    workflow filename or environment only shows up on the first publish as
    `ENEEDAUTH`.
 
-> **Before the first CI-published release:** the workflow's npm step always
-> runs now, so tagging without a trusted publisher fails the release (the
-> GitHub Release is already created at that point). Complete steps 1–3 first;
-> re-running the workflow after the setup publishes the skipped version.
+> **Before the first CI-published release:** the npm step is gated by the
+> `NPM_PUBLISH_ENABLED` repository variable; leave it unset while completing
+> steps 1–3. A tag pushed while it is unset still creates the GitHub Release
+> and skips npm cleanly. Once the trusted publisher is configured, set the
+> variable to `true` and cut (or re-run) the release.
+
+### Enabling and pausing npm publishing
+
+The npm step is gated by the repository variable `NPM_PUBLISH_ENABLED`; it is
+unset by default, so releases keep shipping the GitHub Release while the
+one-time npm setup is incomplete. Set it only after steps 1–3:
+
+```bash
+gh variable set NPM_PUBLISH_ENABLED --body true
+gh variable list
+```
+
+To pause npm publishing again (for example while rotating credentials), delete
+the variable or set it to `false`:
+
+```bash
+gh variable delete NPM_PUBLISH_ENABLED
+```
+
+With the variable unset, the workflow reports
+`npm_status=disabled (NPM_PUBLISH_ENABLED != true)` and keeps the run green.
+After enabling it, re-run the release workflow for a tag whose npm step was
+skipped to publish that version.
 
 Verify a CI-published release:
 

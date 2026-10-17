@@ -14,6 +14,10 @@
 # a trusted publisher for this repository and this workflow file, and the
 # package must already exist there — see PUBLISHING.md for the one-time setup.
 #
+# npm publishing is gated by the NPM_PUBLISH_ENABLED repository variable: while
+# it is unset, a release still ships the GitHub Release and skips npm, so the
+# one-time bootstrap can happen without breaking releases.
+#
 # The repository commits no build output: the tarball built here is the
 # installable artifact, so a GitHub Release ships a ready-to-install package
 # without a build step on the user's machine.
@@ -262,8 +266,16 @@ jobs:
         id: npm_publish
         if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
+        env:
+          NPM_PUBLISH_ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
         run: |
           set -euo pipefail
+          if [ "${NPM_PUBLISH_ENABLED:-}" != "true" ]; then
+            echo "::notice::npm publishing is disabled (repository variable NPM_PUBLISH_ENABLED is not 'true'); skipping."
+            echo "npm_status=disabled (NPM_PUBLISH_ENABLED != true)" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           name="$(node -p "require('./package.json').name")"
           version="${{ steps.version.outputs.version }}"
           dist_tag="${{ steps.version.outputs.npm_dist_tag }}"
