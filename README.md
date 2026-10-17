@@ -13,16 +13,23 @@ re-uploads.
 
 ## Features
 
-- 📎 Paperclip attach button in the composer tool row, wearing the official
-  attach button's chrome (28px circle, `--dsw-specific-selector` fill, 14px
-  filled glyph, `--dsw-alias-interactive-bg-hover-solid` hover) with the
-  paperclip rotated 45° to keep this plugin's long-standing diagonal, so the
-  two buttons stay tellable apart at a glance. It sits directly to the right of
-  the official attach button, ahead of the permission chips — and Settings can
-  optionally hide the official button and let this one take its place
+- 📎 Paperclip attach button in the composer tool row, wearing the shell's add
+  control chrome (28px circle, `--dsw-specific-selector` fill,
+  `--dsw-alias-label-primary` glyph ink,
+  `--dsw-alias-interactive-bg-hover-solid` hover) with the paperclip rotated
+  45° — its viewBox grows to hold the rotation at the shell's stroke scale, so
+  the two paperclips read as siblings and stay tellable apart at a glance. It
+  sits directly to the right of the add (+) button, ahead of the permission/mode
+  chips
+- The official upload entry can be **replaced**: the shell's "Add → File" row
+  (shared by the `+` menu and the `/` slash menu) is swapped in place for this
+  plugin's own row — same "File" text, angled paperclip glyph, command name
+  `attach-file`. The standalone composer button stays visible by default and can
+  be hidden while the menu entry is the only upload control
 - Multi-file selection with **preview-style attachment cards** (image
   thumbnails) in the dock above the composer: reading → uploading → saved,
-  with copy-path and remove buttons
+  with copy-path and remove actions, plus permanent delete on the card that
+  created the stored copy
 - Files are stored on the DSH host, never only in the browser
 - Name sanitization (path separators, `..`, control characters rejected) and
   automatic `-1`/`-2` collision suffixes for distinct files with the same name
@@ -138,45 +145,61 @@ race in-flight writes; no background task is required.
 - **Default TTL**: `7d` (7 days).
 - **Retention units**: `1s` (seconds), `1m` (minutes), `1h` (hours), `1d`
   (days); a bare number with no unit is treated as days (legacy behavior).
-  `0` (or an empty/invalid value) **disables automatic GC** — files are only
-  removed when you explicitly click 🗑.
+  `0` (or an empty/invalid value) **disables automatic GC** — files then leave
+  disk only through an explicit delete: the 🗑 on the card that created the
+  stored copy, or the settings panel's file manager.
 - **Configure** in **Settings → File uploads** (native DSH settings panel; the
   tab carries its own paperclip mark - the composer button's own diagonal
   glyph, at the same scale - so it never reads as the gear rows other plugins
-  get): the retention field and the *replace the official attach button*
-  switch share one Save button. The bundle persists both in
-  `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial }`) and merges
-  updates field by field, so saving one never clears the other. The environment
-  variable `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a
-  fallback before the default.
+  get): the retention field and the two upload-entry switches (*Replace the
+  official add-file entry*, *Always show the standalone attach button*) share
+  one Save button. The bundle persists all three in
+  `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial,
+  alwaysShowButton }`) and merges updates field by field, so saving one never
+  clears another. The environment variable `DSH_UPLOAD_TTL` (e.g.
+  `DSH_UPLOAD_TTL=30m`) is honored as a fallback before the default.
 
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.
 
-### Attach-button placement & replacing the official button
+### Composer button & replacing the official add-file entry
 
-The composer tool row reads `[+ menu] [official attach] [permission chips]`.
-This plugin's button always stays visible and is placed **directly to the right
-of the official attach button**, ahead of the permission chips. No node React
-owns is moved: the shell's slot wrapper is `display: contents`, so flex
-`order` re-sequences the row — ours at 1, everything the shell draws after its
-own attach button at 2.
+The composer tool row reads `[+ add] [this plugin's paperclip] [mode chips]`.
+This plugin's button is placed **directly to the right of the add (+) button**,
+ahead of the permission/mode chips. No node React owns is moved: the shell's
+slot wrapper is `display: contents`, so flex `order` re-sequences the row —
+ours at 1, everything the shell draws after the add button at 2.
 
-| *Replace the official attach button* | Result |
-|---|---|
-| Off (default) | Two buttons side by side: the official upright paperclip, then this plugin's diagonal one |
-| On | The official button is hidden and this plugin's button stands in its place — a single upload control in the row |
+The official upload entry lives in the shell's command menu: the `+` add
+button and the `/` slash menu render the same command source, whose "Add"
+heading carries a **File** row. Two settings decide where this plugin offers
+its upload entry:
+
+| *Replace the official add-file entry* | *Always show the standalone attach button* | Result |
+|---|---|---|
+| Off (default) | On (default) | Two upload entries: this plugin's composer button, plus the shell's own File row in the `+` / `/` menu |
+| On | On | The shell's File row is swapped in place for this plugin's row (same "File" text, angled paperclip, command name `attach-file`, same "Add" heading); the composer button stays visible |
+| On | Off | Same swap, and the standalone composer button is hidden — the menu row is the only upload entry |
+| Off | Off | The composer button still shows: with replacement off there is no row of ours in the menu, so hiding the button would leave no entry |
 
 - Saving applies at once, with no refresh, and to every composer mounted later.
-- Switching it off and saving — or disabling/unloading the plugin — puts the
-  official button back exactly as the shell drew it: hiding writes one inline
-  style and never detaches a node, so React's tree stays intact.
-- While the official button is hidden, its own pending-attachment rail can no
-  longer be triggered; uploads, progress and cleanup all belong to this plugin.
+- The swapped row keeps the official row's position and "Add" heading, so the
+  menu reads unchanged apart from the glyph and command name; its action opens
+  the very picker the composer button opens — one upload path.
+- If the shell is not offering its own File row at that moment (attachments
+  unavailable), the plugin withholds its row too instead of adding one that
+  cannot work. The swap rides the shell's command service; a shell that does
+  not expose it simply keeps the official entry.
+- Switching the replacement off and saving — or disabling/unloading the
+  plugin — restores the shell's File row in both menus exactly as drawn, and
+  the hidden standalone button returns to its normal row position.
+- The hidden button is detached, not unmounted, so the menu action can still
+  click its file input; apart from that the row is left as drawn.
+- While the entry is replaced, the native File action is gone from both menus —
+  picking files always goes through this plugin, so uploads, progress and
+  cleanup all belong to it.
 - This plugin's button is never disabled by a running turn — a file picked while
   the machine is busy is injected at the next step.
-- If a future shell stops matching, the row is left exactly as drawn, the
-  official button stays visible, and one console warning names the reason.
 
 ### Two card actions (recap)
 
@@ -284,6 +307,8 @@ conversation.input.left                   webServer route POST /upload
   └ paperclip ── File (body) ────────────► stage .dfu-tmp-*, incremental SHA-256
                                             commit: dedup → name → move → .dfu-index.json
                                             $DSH_HOME/uploads
+ui-commands (+ / slash menu)
+  └ attach-file row (when replaced) ── opens the same picker
 conversation.input.dock                   remove route (keep file)
   └ attachment cards (persist)             └ pending entry deleted (file kept)
        └ × closes card → stop injecting    delete route (permanent)
@@ -331,6 +356,7 @@ dsh-web-file-uploader/
 ├── test/
 │   ├── host.test.ts            # host core regression suite (streaming intake)
 │   ├── settings-panel.test.ts  # settings panel suite (stub React, no browser)
+│   ├── cards.test.ts           # composer attachment-card suite (stub React)
 │   ├── bundle.test.ts          # loads the shipped client bundle via the loader contract
 │   └── release-notes.test.ts   # release-note composition CLI (release-notes gate)
 ├── scripts/
@@ -359,7 +385,8 @@ CLI without a separate compile step.
 ## Development status
 
 - ✅ Static bundle: card-driven injection, model-aware adaptation, dedup, i18n
-  UI, settings panel with batch delete — all covered by the test suites
+  UI, settings panel with batch delete, and the replaceable add/slash-menu
+  entry — all covered by the test suites
 - ✅ Distribution: each bare-version tag runs CI, builds the bundle and attaches
   the installable tarball to the GitHub Release (no build needed to install)
 - ⚠️ The client build wrapper in `scripts/build.ts` is a best-effort emulation
