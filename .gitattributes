@@ -1,0 +1,6 @@
+# Generated artifacts are committed because the plugin ships as a static bundle,
+# but they are derived from the TypeScript sources under src/. Mark them so
+# GitHub keeps them out of the repository language statistics (and collapses
+# them in diffs) instead of reporting half the repository as JavaScript.
+lib/** linguist-generated=true
+client/src/client.js linguist-generated=true
