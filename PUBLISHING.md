@@ -69,65 +69,80 @@ plugin issue** — it is a pnpm store-version mismatch in the web profile:
   (no existing profile) never hit this — the profile is initialized with the
   current pnpm.
 
-## Publishing to the npm registry (optional)
+## Releases
 
-Only needed for `dsh plugin --profile web add dsh-web-file-uploader` (bare
-name). **Requires your help** — npm credentials and CI configuration:
+Releases are cut by CI — `.github/workflows/release.yml` — from version tags.
+Nothing has to be published by hand.
 
-### What is needed from you
+### Cutting a release
 
-1. **npm access**: an npm account with publish rights for the package name
-   `dsh-web-file-uploader` (or an org-scoped name). Two options:
-   - an `NODE_AUTH_TOKEN` (automation token, read-only publish) for CI, and/or
-   - an interactive `npm login` for manual publishes.
-2. **CI platform**: GitHub Actions is assumed below; any runner that can run
-   `pnpm` + `npm publish` works.
+The tag name is `v` + the exact `package.json` version. One command bumps the
+version, commits it and creates the tag:
 
-### Manual publish
+```bash
+# pre-release: 1.0.0-alpha.1 -> 1.0.0-alpha.2 (same for -beta.N / -rc.N)
+npm version 1.0.0-alpha.2 -m "chore(release): %s"
+# final release
+npm version 1.0.0 -m "chore(release): %s"
+
+# push the commit and the tag — the workflow does the rest
+git push origin main --follow-tags
+```
+
+`npm version` writes `package.json`, commits `chore(release): <version>` and
+creates the `v<version>` tag (the `%s` placeholder is the version). The
+workflow then:
+
+1. rejects a tag that does not match `package.json`, is not valid semver, or
+   whose commit is not reachable from `main`;
+2. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
+   committed bundle is not reproducible (`git status` must stay clean after
+   the build);
+3. packs the npm tarball and asserts the shipped files are inside it;
+4. creates a **GitHub Release** with the tarball attached. Any semver
+   prerelease (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a
+   **pre-release**; a final `X.Y.Z` release is marked latest;
+5. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
+   `--tag next` so a plain `dsh plugin ... add dsh-web-file-uploader` keeps
+   resolving to the last stable version, final releases use `latest`; both are
+   published with `--provenance` from this public repository;
+6. uploads the tarball as a workflow artifact and writes a summary table to
+   the run page.
+
+Re-running a failed workflow is safe: an existing GitHub Release gets its
+tarball replaced and an already-published npm version is skipped.
+
+### npm credentials (optional)
+
+The GitHub Release needs no secret at all. The npm step needs one repository
+secret (Settings → Secrets and variables → Actions):
+
+- `NODE_AUTH_TOKEN` — npm automation token with publish rights for
+  `dsh-web-file-uploader`; the first publish claims the name for that account.
+
+When the secret is missing the workflow logs a notice and skips the npm step,
+so tagging works before npm is set up. [npm Trusted
+Publishing](https://docs.npmjs.com/trusted-publishers/) can replace the token:
+configure this repository and `release.yml` on npmjs.com and drop the secret
+(the workflow already grants `id-token: write`).
+
+### Manual / dry-run release
+
+*Actions → release → Run workflow* releases an existing tag, which is how a
+release that failed midway is retried. Set `dry_run: true` to run every check,
+the build and the pack (including the tarball artifact) without creating a
+release or publishing — useful to validate the pipeline or a suspicious build.
+
+### Manual publish (debugging only)
+
+Never needed for a normal release, but available for emergencies:
 
 ```bash
 pnpm install
-pnpm typecheck && pnpm test   # gate the release
-pnpm build                    # produces lib/ + client/src/client.js
-npm publish --tag next        # --tag next keeps 1.0.0-alpha.x off `latest`
+pnpm typecheck && pnpm test
+pnpm build
+npm publish --tag next        # prereleases; `latest` for final releases
 ```
-
-Use `--tag next` for the alpha line so a plain
-`dsh plugin --profile web add dsh-web-file-uploader` keeps resolving to the
-last stable version; drop the flag when 1.0.0 final ships.
-
-### CI (GitHub Actions)
-
-Add the following secrets to the repository:
-- `NODE_AUTH_TOKEN` — npm automation token with publish scope.
-
-`.github/workflows/publish.yml`:
-
-```yaml
-name: publish
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-```
-
-Tag a release (`git tag v1.0.0-alpha.1 && git push --tags`) to trigger it.
 
 ## Update
 

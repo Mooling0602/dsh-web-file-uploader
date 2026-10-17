@@ -232,8 +232,8 @@ dsh plugin --profile web add dsh-web-file-uploader
 > `https://github.com/Mooling0602/dsh-web-file-uploader.git`.
 
 Restart the dsh web process and refresh the page. See
-[PUBLISHING.md](PUBLISHING.md) for distribution details and the optional npm
-publish flow (requires your npm credentials).
+[PUBLISHING.md](PUBLISHING.md) for distribution details and the tag-driven
+release workflow (`v*` tags publish pre-releases automatically).
 
 ### Update
 

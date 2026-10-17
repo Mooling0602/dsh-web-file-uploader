@@ -142,7 +142,7 @@ dsh plugin --profile web add dsh-web-file-uploader
 > `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` 或
 > `https://github.com/Mooling0602/dsh-web-file-uploader.git`。
 
-重启 dsh web 进程并刷新页面。分发细节与可选的 npm 发布流程（需要你的 npm 凭据）见 [PUBLISHING.md](PUBLISHING.md)。
+重启 dsh web 进程并刷新页面。分发细节与「推送 `v*` 标签即自动发布 pre-release」的发布流程见 [PUBLISHING.md](PUBLISHING.md)。
 
 ### 更新
 
