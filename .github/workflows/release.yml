@@ -2,8 +2,9 @@
 #
 # Push a tag named `v<package.json version>` (for example v1.0.0-alpha.2) and
 # this workflow runs the full gate, packs the npm tarball, creates a GitHub
-# Release (flagged as a pre-release for any semver prerelease: alpha, beta,
-# rc, ...) and publishes to npm when the NODE_AUTH_TOKEN secret is configured.
+# Release whose body is the `## <version>` section of CHANGELOG.md (flagged as
+# a pre-release for any semver prerelease: alpha, beta, rc, ...) and publishes
+# to npm when the NODE_AUTH_TOKEN secret is configured.
 #
 # See PUBLISHING.md for the release checklist, the npm dist-tag policy and the
 # optional npm credentials.
@@ -116,6 +117,18 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "tag ${tag}: version ${version}, channel ${channel}, prerelease=${prerelease}"
 
+      - name: Extract the release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          node scripts/release-notes.mjs "${version}" --output "${notes_file}"
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+          echo "--- release notes (CHANGELOG.md ## ${version}) ---"
+          cat "${notes_file}"
+
       - name: Install dependencies
         run: pnpm install
 
@@ -183,29 +196,30 @@ jobs:
           set -euo pipefail
           tag="${TAG}"
           tarball="${{ steps.pack.outputs.tarball }}"
+          notes_file="${{ steps.notes.outputs.notes_file }}"
           prerelease="${{ steps.version.outputs.prerelease }}"
 
           if gh release view "${tag}" > /dev/null 2>&1; then
-            echo "release ${tag} already exists; refreshing its tarball"
+            echo "release ${tag} already exists; refreshing its tarball and notes"
             gh release upload "${tag}" "${tarball}" --clobber
             if [ "${prerelease}" = "true" ]; then
-              gh release edit "${tag}" --prerelease
+              gh release edit "${tag}" --notes-file "${notes_file}" --prerelease
             else
-              gh release edit "${tag}" --latest
+              gh release edit "${tag}" --notes-file "${notes_file}" --latest
             fi
             echo "release_status=updated" >> "${GITHUB_OUTPUT}"
           elif [ "${prerelease}" = "true" ]; then
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
               --title "${tag}" \
-              --generate-notes \
+              --notes-file "${notes_file}" \
               --prerelease
             echo "release_status=created (pre-release)" >> "${GITHUB_OUTPUT}"
           else
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
               --title "${tag}" \
-              --generate-notes \
+              --notes-file "${notes_file}" \
               --latest
             echo "release_status=created" >> "${GITHUB_OUTPUT}"
           fi
@@ -264,6 +278,7 @@ jobs:
             echo "| version | \`${{ steps.version.outputs.version }}\` |"
             echo "| channel | \`${{ steps.version.outputs.channel }}\` |"
             echo "| pre-release | \`${{ steps.version.outputs.prerelease }}\` |"
+            echo "| release notes | \`CHANGELOG.md\` § ${{ steps.version.outputs.version }} |"
             echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
             echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"
             echo "| npm dist-tag | \`${{ steps.version.outputs.npm_dist_tag }}\` |"
