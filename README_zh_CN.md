@@ -136,8 +136,8 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 dsh plugin --profile web add \
   https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
-# npm registry（首次 CI 发布后）
-dsh plugin --profile web add dsh-web-file-uploader
+# npm registry（预发布版本发布在 `next` 标签下）
+dsh plugin --profile web add dsh-web-file-uploader@next
 
 # Git 仓库（安装时重新构建；pnpm 会询问是否允许构建脚本）
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader

@@ -16,8 +16,9 @@ only. Any pnpm-supported source works — **no npm account is required**:
 dsh plugin --profile web add \
   https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
-# npm registry (after the first CI publish, see Releases)
-dsh plugin --profile web add dsh-web-file-uploader
+# npm registry (after the trusted-publishing setup; pre-releases live under
+# the `next` tag until a stable release moves `latest`)
+dsh plugin --profile web add dsh-web-file-uploader@next
 
 # Git repository (rebuilds on install through the prepare script)
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
@@ -162,10 +163,10 @@ picks up the `v` prefix. The workflow then:
    notes, with the tarball attached. Any semver prerelease
    (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a **pre-release**; a
    final `X.Y.Z` release is marked latest;
-6. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
-   `--tag next` so a plain `dsh plugin ... add dsh-web-file-uploader` keeps
-   resolving to the last stable version, final releases use `latest`; both are
-   published with `--provenance` from this public repository;
+6. publishes the package to npm through OIDC trusted publishing — this
+   repository stores no npm token; prereleases use `--tag next` so `latest`
+   keeps pointing at the last stable version, final releases use `latest`;
+   trusted publishing signs the provenance attestation automatically;
 7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
@@ -181,19 +182,73 @@ skipped. This applies to tags that carry the `## Header` / `## Endfix` format;
 a tag from before that format change fails the compose step, so cut a new
 version instead of re-running its release.
 
-### npm credentials (optional)
+### npm publishing (OIDC trusted publishing)
 
-The GitHub Release needs no secret at all. The npm step needs one repository
-secret (Settings → Secrets and variables → Actions):
+The workflow publishes to npm with [Trusted
+Publishing](https://docs.npmjs.com/trusted-publishers/): the job's
+`id-token: write` permission lets npm exchange a GitHub OIDC identity for a
+short-lived registry credential, so the repository stores **no npm token** —
+there is no `NODE_AUTH_TOKEN` secret to create.
 
-- `NODE_AUTH_TOKEN` — npm automation token with publish rights for
-  `dsh-web-file-uploader`; the first publish claims the name for that account.
+Three one-time steps make it work:
 
-When the secret is missing the workflow logs a notice and skips the npm step,
-so tagging works before npm is set up. [npm Trusted
-Publishing](https://docs.npmjs.com/trusted-publishers/) can replace the token:
-configure this repository and `release.yml` on npmjs.com and drop the secret
-(the workflow already grants `id-token: write`).
+1. **Claim the package name with a manual first publish.** npm cannot configure
+   a trusted publisher for a package that does not exist yet (and `npm trust`
+   rejects it too). From a checkout of the first release tag:
+
+   ```bash
+   git checkout 1.0.0-alpha.4
+   pnpm install                        # runs the build through `prepare`
+   npm login                           # web login + 2FA, 2-hour session token
+   npm publish --access public --tag next   # prerelease -> `next`, never `latest`
+   ```
+
+   The bootstrap publish is signed by your account, not by CI, so it has no
+   provenance. Stable versions publish without `--tag next`; a first stable
+   release uses plain `npm publish --access public` and creates `latest`.
+   Until a stable release does that, the npm channel is `dsh plugin --profile
+   web add dsh-web-file-uploader@next` — `latest` does not exist yet.
+
+2. **Configure the trusted publisher** — npmjs.com → *Packages →
+   dsh-web-file-uploader → Settings → Trusted publishing → GitHub Actions*, or
+   from a logged-in CLI with npm ≥ 11.15.0:
+
+   ```bash
+   npm trust github dsh-web-file-uploader \
+     --repository Mooling0602/dsh-web-file-uploader \
+     --file release.yml \
+     --allow-publish --yes
+   ```
+
+   Fields: organization/user `Mooling0602`, repository
+   `dsh-web-file-uploader` (no owner), workflow filename `release.yml` (file
+   name only), environment empty (this workflow sets none), and allowed action
+   `npm publish` — newer configurations allow `npm stage publish` by default,
+   so enable `npm publish` explicitly. If the workflow ever adds an
+   `environment:`, the name must match this form exactly. Inspect the saved
+   relationship with `npm trust list dsh-web-file-uploader`.
+
+3. **Validate within 48 hours.** npm expires a trusted publisher that has not
+   completed a successful publish within two days; an expired configuration
+   cannot be edited, only deleted and recreated. Cut the next release right
+   after configuring it. npm does not validate the form on save: a wrong
+   workflow filename or environment only shows up on the first publish as
+   `ENEEDAUTH`.
+
+> **Before the first CI-published release:** the workflow's npm step always
+> runs now, so tagging without a trusted publisher fails the release (the
+> GitHub Release is already created at that point). Complete steps 1–3 first;
+> re-running the workflow after the setup publishes the skipped version.
+
+Verify a CI-published release:
+
+```bash
+npm view dsh-web-file-uploader version _npmUser dist.attestations --json
+# _npmUser.name is "GitHub Actions"; dist.attestations has SLSA provenance
+npm audit signatures   # in a project that installed the package
+```
+
+The npm package page shows a **Provenance** badge for versions published by CI.
 
 ### Manual / dry-run release
 
@@ -212,8 +267,12 @@ Never needed for a normal release, but available for emergencies:
 pnpm install
 pnpm typecheck && pnpm test
 pnpm build
-npm publish --tag next        # prereleases; `latest` for final releases
+npm login                              # 2FA web login, 2-hour session token
+npm publish --access public --tag next # prereleases; `latest` for final releases
 ```
+
+Trusted publishing only applies inside GitHub Actions; a local publish is
+signed by your npm account and carries no provenance.
 
 ## Update
 

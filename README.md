@@ -245,8 +245,8 @@ The package declares `dsh.bundle.patch` (see `cordis.patch.yml`), so
 dsh plugin --profile web add \
   https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
 
-# npm registry (after the first CI publish)
-dsh plugin --profile web add dsh-web-file-uploader
+# npm registry (pre-releases publish under the `next` tag)
+dsh plugin --profile web add dsh-web-file-uploader@next
 
 # Git repository (rebuilds on install; pnpm asks to allow the build script)
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
