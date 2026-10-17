@@ -314,6 +314,44 @@ ok(
 )
 ok('the batch bar disappears with the cards', tree === null, tree)
 
+// ---- 6: delete-all permanently deletes what it can, skipping shared copies --
+reply = { ok: true, path: '/u/del-me.txt', size: 12, dedup: false }
+await pick('del-me.txt')
+reply = { ok: true, path: '/u/shared-a.txt', size: 12, dedup: true }
+await pick('shared-a.txt')
+reply = { ok: false, error: 'nope' }
+await pick('bad.txt')
+tree = cards()
+const deleteAllAction = findAction(dicts.zh.deleteAllCards)
+ok('delete-all appears when a card can be deleted', deleteAllAction !== undefined)
+;(deleteAllAction!.props!.onClick as () => void)()
+tree = cards()
+ok('delete-all asks before deleting', textOf(tree).includes(dicts.zh.deleteAllConfirm), textOf(tree))
+ok('delete-all names the deletable count', textOf(tree).includes('永久删除 1 个文件？'), textOf(tree))
+const cancelDeleteAction = findAction(dicts.zh.clearAllCancel)
+ok('delete-all can be cancelled', cancelDeleteAction !== undefined)
+;(cancelDeleteAction!.props!.onClick as () => void)()
+tree = cards()
+ok('cancel restores the delete action', textOf(tree).includes(dicts.zh.deleteAllCards), textOf(tree))
+
+;(findAction(dicts.zh.deleteAllCards)!.props!.onClick as () => void)()
+;(findAction(dicts.zh.deleteAllConfirm)!.props!.onClick as () => void)()
+tree = cards()
+ok('delete-all removes every settled card', tree === null, tree)
+ok('delete-all deletes the ordinary file', deletes.some((d) => d.path === '/u/del-me.txt'), deletes)
+ok('delete-all never deletes a shared copy', !deletes.some((d) => d.path === '/u/shared-a.txt'), deletes)
+ok('delete-all un-references the shared card', removes.some((r) => r.path === '/u/shared-a.txt'), removes)
+
+// A dock where every file is a shared copy has nothing safe to delete, so the
+// action hides; the host also protects cross-session copies at delete time.
+reply = { ok: true, path: '/u/shared-b.txt', size: 12, dedup: true }
+await pick('shared-b.txt')
+reply = { ok: true, path: '/u/shared-c.txt', size: 12, dedup: true }
+await pick('shared-c.txt')
+tree = cards()
+ok('delete-all hides when every card is a shared copy', findAction(dicts.zh.deleteAllCards) === undefined)
+ok('remove-all stays available for shared copies', findAction(dicts.zh.clearAllCards) !== undefined)
+
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail === 0 ? 0 : 1)

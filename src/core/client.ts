@@ -191,6 +191,10 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       clearAllQuestion: '移除 {n} 个卡片？',
       clearAllConfirm: '确认移除',
       clearAllCancel: '取消',
+      deleteAllCards: '全部删除',
+      deleteAllHint: '永久删除上传目录中的文件（不可找回）',
+      deleteAllQuestion: '永久删除 {n} 个文件？',
+      deleteAllConfirm: '确认删除',
       remove: '移除',
       delete: '删除文件（不可找回）',
       dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
@@ -248,6 +252,10 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       clearAllQuestion: 'Remove {n} cards?',
       clearAllConfirm: 'Remove',
       clearAllCancel: 'Cancel',
+      deleteAllCards: 'Delete all',
+      deleteAllHint: 'Permanently delete the uploaded files (cannot be undone)',
+      deleteAllQuestion: 'Permanently delete {n} files?',
+      deleteAllConfirm: 'Delete',
       remove: 'Remove',
       delete: 'Delete file (permanent)',
       dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
@@ -662,12 +670,12 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     // Batch-state hooks must run before the empty-list early return so the hook
     // order stays stable when the last card closes.
     const [copiedAll, setCopiedAll] = react.useState(false)
-    const [clearArmed, setClearArmed] = react.useState(false)
+    const [armed, setArmed] = react.useState<'clear' | 'delete' | null>(null)
     const sessionId = sessionIdOf(props)
     const files = store.files(sessionId)
     react.useEffect(() => {
-      // Drop an armed "remove all" once individual cards thin the list out.
-      if (files.length <= 1) setClearArmed(false)
+      // Drop an armed batch confirmation once individual cards thin the list out.
+      if (files.length <= 1) setArmed(null)
     }, [files.length])
     if (!files.length) return null
     const chips: unknown[] = []
@@ -828,12 +836,15 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       )
     }
     // Batch controls, shown once the dock holds more than one card: copy every
-    // settled path at once, or remove every settled card (the files stay on
-    // disk — permanent deletion remains a per-card or settings-page action).
-    // Cards still uploading are left alone so a batch never silently discards
-    // bytes; their per-card × keeps asking first.
+    // settled path at once, remove the cards (files stay on disk), or delete
+    // the files permanently where that is safe. Cards still uploading are left
+    // alone so a batch never silently discards bytes; their per-card × keeps
+    // asking first.
     const settledPaths = files.filter((f) => f.status === 'done' && f.path).map((f) => f.path as string)
     const removable = files.filter((f) => f.status !== 'uploading' && f.status !== 'cancelling')
+    // A card whose upload reused an existing copy must not take that shared
+    // file down with it; a batch only un-references those cards.
+    const deletable = removable.filter((f) => f.status === 'done' && f.path && f.dedup !== true)
     const copyAll = () => {
       if (!settledPaths.length) return
       copyText(settledPaths.join('\n'))
@@ -842,14 +853,22 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     }
     const clearSettled = () => {
       removable.forEach((f) => removeCard(sessionId, f.id))
-      setClearArmed(false)
+      setArmed(null)
     }
+    const deleteSettled = () => {
+      removable.forEach((f) => {
+        if (f.status === 'done' && f.path && f.dedup !== true) deleteCard(sessionId, f.id)
+        else removeCard(sessionId, f.id)
+      })
+      setArmed(null)
+    }
+    const cancelArmed = () => setArmed(null)
     let batchBar: unknown = null
     if (files.length > 1) {
       const batchChildren: unknown[] = [
         react.createElement('span', { key: 'count', className: 'dfu-dock-count' }, tf('dockCount', { n: files.length })),
       ]
-      if (clearArmed) {
+      if (armed === 'clear') {
         batchChildren.push(
           react.createElement('span', { key: 'question', className: 'dfu-dock-question' }, tf('clearAllQuestion', { n: removable.length })),
           react.createElement(
@@ -857,11 +876,17 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             { key: 'confirm', type: 'button', className: 'dfu-dock-action dfu-dock-action-danger', onClick: clearSettled },
             tFn('clearAllConfirm'),
           ),
+          react.createElement('button', { key: 'cancel', type: 'button', className: 'dfu-dock-action', onClick: cancelArmed }, tFn('clearAllCancel')),
+        )
+      } else if (armed === 'delete') {
+        batchChildren.push(
+          react.createElement('span', { key: 'question', className: 'dfu-dock-question' }, tf('deleteAllQuestion', { n: deletable.length })),
           react.createElement(
             'button',
-            { key: 'cancel', type: 'button', className: 'dfu-dock-action', onClick: () => setClearArmed(false) },
-            tFn('clearAllCancel'),
+            { key: 'confirm', type: 'button', className: 'dfu-dock-action dfu-dock-action-danger', onClick: deleteSettled },
+            tFn('deleteAllConfirm'),
           ),
+          react.createElement('button', { key: 'cancel', type: 'button', className: 'dfu-dock-action', onClick: cancelArmed }, tFn('clearAllCancel')),
         )
       } else {
         if (settledPaths.length > 0) {
@@ -882,9 +907,24 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
                 type: 'button',
                 className: 'dfu-dock-action dfu-dock-action-danger',
                 title: tFn('clearAllHint'),
-                onClick: () => setClearArmed(true),
+                onClick: () => setArmed('clear'),
               },
               tFn('clearAllCards'),
+            ),
+          )
+        }
+        if (deletable.length > 0) {
+          batchChildren.push(
+            react.createElement(
+              'button',
+              {
+                key: 'delete',
+                type: 'button',
+                className: 'dfu-dock-action dfu-dock-action-danger',
+                title: tFn('deleteAllHint'),
+                onClick: () => setArmed('delete'),
+              },
+              tFn('deleteAllCards'),
             ),
           )
         }
