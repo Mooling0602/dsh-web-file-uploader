@@ -121,6 +121,7 @@ let configResult: Record<string, unknown> = {
   replaceOfficial: false,
   alwaysShowButton: true,
   maxFiles: 100,
+  foldThreshold: 100,
 }
 
 const core = createClientCore({
@@ -137,6 +138,7 @@ const core = createClientCore({
       replaceOfficial: cfg.replaceOfficial === true,
       alwaysShowButton: cfg.alwaysShowButton !== false,
       maxFiles: cfg.maxFiles,
+      foldThreshold: cfg.foldThreshold,
     }
   },
   filesList: async () => listResult,
@@ -296,11 +298,11 @@ ok('save sends the always-show setting', (savedConfig as Record<string, unknown>
 ok('save keeps the replacement setting', (savedConfig as Record<string, unknown> | null)?.replaceOfficial === false, savedConfig)
 
 // ---- max-files stepper ----
-configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 7 }
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 7, foldThreshold: 30 }
 tree = await mount()
-const stepperInput = () => byClass(tree, 'dfu-stepper-input')[0]
+const stepperInput = () => byClass(tree, 'dfu-maxfiles-input')[0]
 ok('max-files stepper renders the configured value', stepperInput()?.props!.value === '7', stepperInput()?.props!.value)
-const stepperButtons = byClass(tree, 'dfu-stepper-btn')
+const stepperButtons = byClass(tree, 'dfu-maxfiles-step')
 ok('max-files stepper has two buttons', stepperButtons.length === 2, stepperButtons.length)
 const plusBtn = stepperButtons.find((b) => b.props!.title === dicts.zh.increase)
 ok('the plus button is labelled', plusBtn !== undefined)
@@ -323,7 +325,30 @@ const saveBig = byClass(tree, 'dfu-settings-save').find((n) => n.props!.classNam
 ;(saveBig!.props!.onClick as () => void)()
 await new Promise((r) => setTimeout(r, 0))
 ok('save clamps an oversized value', (savedConfig as Record<string, unknown> | null)?.maxFiles === 10000, savedConfig)
-configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100 }
+// ---- fold-threshold stepper ----
+const foldInput = () => byClass(tree, 'dfu-fold-input')[0]
+ok('fold-threshold renders the configured value', foldInput()?.props!.value === '30', foldInput()?.props!.value)
+const foldSteps = byClass(tree, 'dfu-fold-step')
+ok('fold stepper has two buttons', foldSteps.length === 2, foldSteps.length)
+const foldMinus = foldSteps.find((b) => b.props!.title === dicts.zh.decrease)
+ok('the fold minus button is labelled', foldMinus !== undefined)
+;(foldMinus!.props!.onClick as () => void)()
+tree = draw()
+ok('fold minus steps by one', foldInput()?.props!.value === '29', foldInput()?.props!.value)
+;(foldInput().props!.onChange as (e: unknown) => void)({ target: { value: '1' } })
+tree = draw()
+const saveFoldLow = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveFoldLow!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+tree = draw()
+ok('fold save clamps below the minimum', (savedConfig as Record<string, unknown> | null)?.foldThreshold === 2, savedConfig)
+;(foldInput().props!.onChange as (e: unknown) => void)({ target: { value: '999' } })
+tree = draw()
+const saveFoldHigh = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveFoldHigh!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('fold save clamps above the maximum', (savedConfig as Record<string, unknown> | null)?.foldThreshold === 100, savedConfig)
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100 }
 
 // ---- i18n contract ----
 ok('zh carries manageInUseNotice', typeof dicts.zh.manageInUseNotice === 'string' && dicts.zh.manageInUseNotice.length > 0)

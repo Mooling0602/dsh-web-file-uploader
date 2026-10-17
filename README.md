@@ -154,16 +154,27 @@ race in-flight writes; no background task is required.
   as a whole - nothing is uploaded - and raises a "cannot upload or reference
   more files" notice. The limit is client-side, so the shell's own upload
   entry is not affected when the replacement switch is off.
+- **Send-time fold threshold** (Settings → File uploads, 2-100, default 100):
+  when a message is sent and a group in the card area - new uploads, or existing
+  dedup copies - reaches the threshold, that group folds for the injected
+  context. New files move into a `YYYY-MM-DD-hh-mm-ss` folder under `uploads/`;
+  the existing group gets `YYYY-MM-DD-hh-mm-ss-existing/paths.txt`; the
+  `[Attached files]` block then points at the folder / paths.txt instead of
+  listing every path. Images that are injected as native image blocks do not
+  count and never fold. A later send keeps using the same folder, and the files
+  move back to the uploads root once the session's cards are gone (a startup
+  sweep also unpacks folders left by a previous run).
 - **Configure** in **Settings → File uploads** (native DSH settings panel; the
   tab carries its own paperclip mark - the composer button's own diagonal
   glyph, at the same scale - so it never reads as the gear rows other plugins
-  get): the retention field, the max-files stepper and the two upload-entry
-  switches (*Replace the official add-file entry*, *Always show the standalone
-  attach button*) share one Save button. The bundle persists all of them in
-  `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial,
-  alwaysShowButton, maxFiles }`) and merges updates field by field, so saving
-  one never clears another. The environment variable `DSH_UPLOAD_TTL` (e.g.
-  `DSH_UPLOAD_TTL=30m`) is honored as a fallback before the default.
+  get): the retention field, the max-files and fold-threshold steppers, and the
+  two upload-entry switches (*Replace the official add-file entry*, *Always
+  show the standalone attach button*) share one Save button. The bundle persists
+  all of them in `~/.dsh/dsh-web-file-uploader.json` (`{ ttl,
+  replaceOfficial, alwaysShowButton, maxFiles, foldThreshold }`) and merges
+  updates field by field, so saving one never clears another. The environment
+  variable `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a fallback
+  before the default.
 
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.

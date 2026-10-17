@@ -96,6 +96,8 @@ export interface DfuConfig {
   alwaysShowButton?: boolean
   /** Max files one picker selection may upload; 0 means unlimited. */
   maxFiles?: number
+  /** Send-time fold threshold (2..100): a group at or above it folds. */
+  foldThreshold?: number
 }
 
 /** One row of the settings "manage files" inventory (mirrors the host core). */
@@ -207,6 +209,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       maxFilesLabel: '单次上传最大文件数量',
       maxFilesHint: '0 表示不限制，默认 100；超过上限的整次选择会被拒绝。只统计本插件入口的一次选择。',
       maxFilesWarning: '已设为 0（不限制）：一次选择过多文件可能拖慢浏览器和宿主。',
+      foldThresholdLabel: '单次上传文件折叠阈值',
+      foldThresholdHint: '发送时，新增文件组或已有文件组各自达到该数量（2–100，默认 100）就折叠到时间戳目录；图片走原生注入时不计数。',
       increase: '增加',
       decrease: '减少',
       tooManyFilesTitle: '无法上传或引用更多文件',
@@ -276,6 +280,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       maxFilesLabel: 'Max files per upload',
       maxFilesHint: '0 means unlimited; default 100. A pick over the limit is refused as a whole. Counts one picker selection through this plugin.',
       maxFilesWarning: 'Set to 0 (unlimited): picking many files at once can slow the browser and the host.',
+      foldThresholdLabel: 'Send-time fold threshold',
+      foldThresholdHint: 'At send time, a new-file or existing-file group reaching this count (2–100, default 100) folds into a timestamped folder; natively injected images do not count.',
       increase: 'Increase',
       decrease: 'Decrease',
       tooManyFilesTitle: 'Cannot upload or reference more files',
@@ -1356,6 +1362,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const [replaceOn, setReplaceOn] = react.useState(false)
     const [alwaysShowOn, setAlwaysShowOn] = react.useState(true)
     const [maxFiles, setMaxFiles] = react.useState('100')
+    const [foldThreshold, setFoldThreshold] = react.useState('100')
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
     react.useEffect(() => {
       let alive = true
@@ -1367,6 +1374,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
             setReplaceOn(r.replaceOfficial === true)
             setAlwaysShowOn(r.alwaysShowButton !== false)
             if (r.maxFiles != null) setMaxFiles(String(r.maxFiles))
+            if (r.foldThreshold != null) setFoldThreshold(String(r.foldThreshold))
           })
           .catch(() => {})
       }
@@ -1386,10 +1394,27 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     }
     const maxFilesNum = Number(maxFiles)
     const maxFilesIsZero = maxFiles.trim() !== '' && maxFilesNum === 0
+    // Fold threshold: 2..100, one step per click (the range is small).
+    const clampFoldThreshold = (raw: string): number => {
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return 100
+      return Math.max(2, Math.min(100, Math.floor(n)))
+    }
+    const stepFoldThreshold = (delta: number) => {
+      const base = Number(foldThreshold)
+      const from = Number.isFinite(base) ? Math.floor(base) : 100
+      setFoldThreshold(String(Math.max(2, Math.min(100, from + delta))))
+    }
     const save = () => {
       if (typeof configSet !== 'function') return
       setStatus('saving')
-      configSet({ ttl: ttl.trim(), replaceOfficial: replaceOn, alwaysShowButton: alwaysShowOn, maxFiles: clampMaxFiles(maxFiles) })
+      configSet({
+        ttl: ttl.trim(),
+        replaceOfficial: replaceOn,
+        alwaysShowButton: alwaysShowOn,
+        maxFiles: clampMaxFiles(maxFiles),
+        foldThreshold: clampFoldThreshold(foldThreshold),
+      })
         .then((r) => {
           if (r && r.ok === false) {
             setStatus('error')
@@ -1397,6 +1422,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           }
           if (r && r.ttl != null) setTtl(String(r.ttl))
           if (r && r.maxFiles != null) setMaxFiles(String(r.maxFiles))
+          if (r && r.foldThreshold != null) setFoldThreshold(String(r.foldThreshold))
           // Echo wins when the host knows the field; an older host that does not
           // still keeps the requested values, so saving never flips the switch
           // back on screen.
@@ -1462,7 +1488,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           'button',
           {
             type: 'button',
-            className: 'dfu-stepper-btn',
+            className: 'dfu-stepper-btn dfu-maxfiles-step',
             title: tFn('decrease'),
             'aria-label': tFn('decrease'),
             onClick: () => stepMaxFiles(-10),
@@ -1470,7 +1496,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           '\u2212',
         ),
         react.createElement('input', {
-          className: 'dfu-settings-input dfu-stepper-input',
+          className: 'dfu-settings-input dfu-stepper-input dfu-maxfiles-input',
           value: maxFiles,
           inputMode: 'numeric',
           spellCheck: false,
@@ -1483,7 +1509,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           'button',
           {
             type: 'button',
-            className: 'dfu-stepper-btn',
+            className: 'dfu-stepper-btn dfu-maxfiles-step',
             title: tFn('increase'),
             'aria-label': tFn('increase'),
             onClick: () => stepMaxFiles(10),
@@ -1495,6 +1521,44 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       maxFilesIsZero
         ? react.createElement('div', { className: 'dfu-settings-warning' }, tFn('maxFilesWarning'))
         : null,
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-row dfu-settings-stepper' },
+        react.createElement('label', { className: 'dfu-settings-label' }, tFn('foldThresholdLabel')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dfu-stepper-btn dfu-fold-step',
+            title: tFn('decrease'),
+            'aria-label': tFn('decrease'),
+            onClick: () => stepFoldThreshold(-1),
+          },
+          '\u2212',
+        ),
+        react.createElement('input', {
+          className: 'dfu-settings-input dfu-stepper-input dfu-fold-input',
+          value: foldThreshold,
+          inputMode: 'numeric',
+          spellCheck: false,
+          onChange: (e: Event) => {
+            const next = (e.target as HTMLInputElement).value.replace(/[^0-9]/g, '').slice(0, 3)
+            setFoldThreshold(next)
+          },
+        }),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dfu-stepper-btn dfu-fold-step',
+            title: tFn('increase'),
+            'aria-label': tFn('increase'),
+            onClick: () => stepFoldThreshold(1),
+          },
+          '+',
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('foldThresholdHint')),
       react.createElement(
         'div',
         { className: 'dfu-settings-row' },

@@ -19,7 +19,7 @@
 
 import { createHostCore, errMsg } from '../src/core/host.ts'
 import type { UploadResult } from '../src/core/host.ts'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,7 +28,7 @@ const ROOT = join(tmpdir(), 'dfu-host-core-test')
 rmSync(ROOT, { recursive: true, force: true })
 mkdirSync(ROOT + '/uploads', { recursive: true })
 
-let cfg = { ttl: '7d' }
+let cfg: { ttl: string; foldThreshold?: number } = { ttl: '7d' }
 const core = createHostCore({
   uploadsRoot: async () => ROOT,
   ensureDir: async (d) => { mkdirSync(d, { recursive: true }) },
@@ -40,6 +40,11 @@ const core = createHostCore({
   writeTextFile: async (p, c) => { mkdirSync(p.slice(0, p.lastIndexOf('/')), { recursive: true }); writeFileSync(p, c) },
   deleteFile: async (p) => { try { const fs = await import('node:fs'); fs.unlinkSync(p); return { ok: true } } catch (e) { return { ok: false, error: errMsg(e) } } },
   listUploadRoots: async () => [ROOT],
+  listDir: async (d) => { try { return readdirSync(d) } catch { return null } },
+  removeDir: async (d) => { try { rmdirSync(d); return true } catch { return false } },
+  resolveModelInfo: async () => ({ inputModalities: ['text', 'image'] }),
+  attachmentLimits: () => ({ mediaTypes: ['image/png'], maxImageBytes: 10 * 1024 * 1024 }),
+  saveImage: async (input) => ({ name: input.name }),
   readConfig: () => cfg,
   probe: () => {},
   log: () => {},
@@ -142,6 +147,118 @@ d = await core.deleteMany({ sessionId: S1, paths: [] })
 ok('empty selection is a no-op', d.removed === 0 && d.failed === 0 && d.skipped === 0, JSON.stringify(d))
 d = await core.deleteMany({ sessionId: S1, paths: [null, 42, {}, ''] })
 ok('non-path junk ignored', d.removed === 0 && d.failed === 0, JSON.stringify(d))
+
+// ---- send-time folding ------------------------------------------------------
+// A group at or above the fold threshold folds at pre-step: new files move into
+// a timestamp folder, the existing (dedup) group gets a paths.txt next to it,
+// and the injected text points at those instead of listing every path. The
+// folders are unpacked again once the session's references are gone.
+const uploadsPath = ROOT + '/uploads'
+const foldFolderNames = (): string[] =>
+  readdirSync(uploadsPath)
+    .filter((n) => /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}(-\d+)?(-existing)?$/.test(n))
+    .sort()
+
+interface InjectedBlock { type?: string; text?: string; attachment?: unknown }
+interface InjectedDecision { messages?: Array<{ content?: InjectedBlock[] }> }
+const decisionContent = (decision: InjectedDecision): InjectedBlock[] =>
+  (decision.messages && decision.messages[0] && decision.messages[0].content) || []
+const injectText = (decision: InjectedDecision): string => {
+  const block = decisionContent(decision).find(
+    (b) => b.type === 'text' && typeof b.text === 'string' && b.text.indexOf('[Attached files]') >= 0,
+  )
+  return block && block.text ? block.text : ''
+}
+const runPreStep = async (sessionId: string, provider?: string, model?: string): Promise<InjectedDecision> => {
+  const target = { type: 'text', source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }
+  const decision = { kind: 'enter', messages: [target] }
+  return (await core.preStep(
+    { agent: { id: sessionId, options: { provider, model } }, messages: [target] } as never,
+    (async () => decision) as never,
+  )) as InjectedDecision
+}
+
+cfg = { ttl: '7d', foldThreshold: 2 }
+const S3 = 'sess-fold-new'
+const fa = await streamUpload(core, S3, 'fold-a.txt', 'text/plain', 'fold-a-content')
+const fb = await streamUpload(core, S3, 'fold-b.txt', 'text/plain', 'fold-b-content')
+let decision = await runPreStep(S3)
+let injected = injectText(decision)
+const newFolders = foldFolderNames().filter((n) => !n.endsWith('-existing'))
+ok('a new-file group at the threshold folds into a timestamp folder', newFolders.length === 1, foldFolderNames())
+const newFolder = newFolders.length > 0 ? uploadsPath + '/' + newFolders[0] : ''
+ok('both new files moved into the folder', existsSync(newFolder + '/fold-a.txt') && existsSync(newFolder + '/fold-b.txt'), readdirSync(newFolder))
+ok('the injection points at the folder', injected.includes(newFolder + '/'), injected)
+ok('the injection stops listing the moved paths', !injected.includes(fa.path!) && !injected.includes(fb.path!), injected)
+
+const fc = await streamUpload(core, S3, 'fold-c.txt', 'text/plain', 'fold-c-content')
+decision = await runPreStep(S3)
+ok('a repeated send reuses the same folder', foldFolderNames().filter((n) => !n.endsWith('-existing')).length === 1, foldFolderNames())
+ok('the later file joins the existing folder', existsSync(newFolder + '/fold-c.txt'), readdirSync(newFolder))
+ok('the injection still points at that one folder', injectText(decision).includes(newFolder + '/'))
+
+const S5 = 'sess-fold-existing-source'
+const S4 = 'sess-fold-existing'
+const ea = await streamUpload(core, S5, 'dup-a.txt', 'text/plain', 'dup-a-content')
+const eb = await streamUpload(core, S5, 'dup-b.txt', 'text/plain', 'dup-b-content')
+const eaCopy = await streamUpload(core, S4, 'dup-a-copy.txt', 'text/plain', 'dup-a-content')
+const ebCopy = await streamUpload(core, S4, 'dup-b-copy.txt', 'text/plain', 'dup-b-content')
+ok('the re-uploads dedup onto the source paths', eaCopy.dedup === true && ebCopy.dedup === true, JSON.stringify([eaCopy, ebCopy]))
+decision = await runPreStep(S4)
+injected = injectText(decision)
+const existingFolders = foldFolderNames().filter((n) => n.endsWith('-existing'))
+ok('an existing group at the threshold gets a paths.txt folder', existingFolders.length === 1, foldFolderNames())
+const existingFolder = existingFolders.length > 0 ? uploadsPath + '/' + existingFolders[0] : ''
+const txt = existsSync(existingFolder + '/paths.txt') ? readFileSync(existingFolder + '/paths.txt', 'utf8') : ''
+ok('paths.txt lists every existing path', txt.split('\n').filter(Boolean).sort().join(',') === [ea.path!, eb.path!].sort().join(','), txt)
+ok('the injection points at paths.txt', injected.includes(existingFolder + '/paths.txt'), injected)
+ok('the existing files stay where they were', existsSync(ea.path!) && existsSync(eb.path!))
+
+for (const file of ['fold-a.txt', 'fold-b.txt', 'fold-c.txt']) {
+  await core.remove({ sessionId: S3, path: newFolder + '/' + file })
+}
+await core.deleteMany({ sessionId: S3, paths: [] }) // flush the queued unfold
+ok('unfold returns the new files to the uploads root', existsSync(uploadsPath + '/fold-a.txt') && existsSync(uploadsPath + '/fold-b.txt') && existsSync(uploadsPath + '/fold-c.txt'))
+ok('unfold removes the new-file folder', !existsSync(newFolder))
+const foldedIdx = JSON.parse(readFileSync(uploadsPath + '/.dfu-index.json', 'utf8')) as Record<string, { path: string }>
+ok(
+  'unfold rewrites the index back to the uploads root',
+  Object.values(foldedIdx).filter((e) => e.path.includes('fold-a.txt')).every((e) => e.path === uploadsPath + '/fold-a.txt'),
+  JSON.stringify(Object.values(foldedIdx).map((e) => e.path)),
+)
+
+await core.remove({ sessionId: S4, path: ea.path! })
+await core.remove({ sessionId: S4, path: eb.path! })
+await core.deleteMany({ sessionId: S4, paths: [] })
+ok('unfold removes the existing-file helper folder', !existsSync(existingFolder))
+ok('the dedup source files still exist', existsSync(ea.path!) && existsSync(eb.path!))
+
+const S6 = 'sess-fold-images'
+const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+for (const name of ['pic-a.png', 'pic-b.png']) {
+  const begun = await core.beginStream({ sessionId: S6, name, mime: 'image/png', size: png.length })
+  if (begun.ok && begun.tempPath && begun.id) {
+    writeFileSync(begun.tempPath, png)
+    await core.commitStream({ id: begun.id, sha256: createHash('sha256').update(png).digest('hex') })
+  }
+}
+await streamUpload(core, S6, 'img-text-a.txt', 'text/plain', 'img-text-a')
+await streamUpload(core, S6, 'img-text-b.txt', 'text/plain', 'img-text-b')
+decision = await runPreStep(S6, 'fake-provider', 'multimodal-model')
+const imageBlocks = decisionContent(decision).filter((b) => b.type === 'image')
+ok('native images are injected as image blocks', imageBlocks.length >= 1, imageBlocks.length)
+const imageFolderContents = foldFolderNames()
+  .filter((n) => !n.endsWith('-existing'))
+  .map((n) => readdirSync(uploadsPath + '/' + n).sort().join(','))
+ok('native images do not move into the fold folder', imageFolderContents.every((c) => !c.includes('pic-a.png') && !c.includes('pic-b.png')), imageFolderContents)
+ok('the two text files still folded', imageFolderContents.some((c) => c.includes('img-text-a.txt') && c.includes('img-text-b.txt')), imageFolderContents)
+
+// A stale fold folder from a previous run is unpacked on startup.
+const orphan = uploadsPath + '/2020-01-02-03-04-05'
+mkdirSync(orphan, { recursive: true })
+writeFileSync(orphan + '/orphan.txt', 'orphan-content')
+await core.collect()
+ok('startup sweep unpacks leftover fold folders', existsSync(uploadsPath + '/orphan.txt') && !existsSync(orphan))
 
 // multi-root: two uploads roots each with an index
 const ROOT2 = join(tmpdir(), 'dfu-host-core-test-2')

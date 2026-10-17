@@ -70,7 +70,11 @@ export interface HostCoreDeps {
   readBytes?(absPath: string, maxBytes?: number, signal?: AbortSignal): Promise<Uint8Array | null>
   deleteFile?(absPath: string): Promise<{ ok: boolean; error?: string }>
   listUploadRoots?(): Promise<string[]>
-  readConfig?(): { ttl?: string; ttlDays?: number } | null
+  /** Entry names in a directory, or null when it cannot be read. */
+  listDir?(absDir: string): Promise<string[] | null>
+  /** Remove an empty directory (best effort). */
+  removeDir?(absDir: string): Promise<boolean>
+  readConfig?(): { ttl?: string; ttlDays?: number; foldThreshold?: number } | null
   resolveModelInfo?(
     provider: string | undefined,
     model: string | undefined,
@@ -89,6 +93,8 @@ export interface PendingEntry {
   mime: string
   size: number
   abs: string
+  /** True when this upload reused an existing (shared) copy. */
+  dedup?: boolean
 }
 
 /** `.dfu-index.json` maps content hash -> { path, at } (at = upload epoch ms). */
@@ -297,7 +303,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
 
   // --- pending bookkeeping -----------------------------------------------------
 
-  function registerPending(sessionId: string | undefined, entry: { name: string; mime: string; size: number; abs: string }): void {
+  function registerPending(sessionId: string | undefined, entry: { name: string; mime: string; size: number; abs: string; dedup?: boolean }): void {
     if (!sessionId) return
     let row = pending.get(sessionId)
     if (!row) {
@@ -311,6 +317,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       mime: entry.mime,
       size: entry.size,
       abs: entry.abs,
+      dedup: entry.dedup === true,
     })
   }
 
@@ -366,7 +373,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       const info = await deps.statPath(existing.path)
       if (!info) return null
       const bytes = info.size !== undefined ? info.size : size
-      registerPending(sessionId, { name, mime, size: bytes, abs: existing.path })
+      registerPending(sessionId, { name, mime, size: bytes, abs: existing.path, dedup: true })
       probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
       return { ok: true, name, path: existing.path, size: bytes, dedup: true }
     } catch {
@@ -407,7 +414,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         await saveIndex(uploadsDir, index)
       }
     }
-    registerPending(sessionId, { name, mime, size, abs })
+    registerPending(sessionId, { name, mime, size, abs, dedup: false })
     probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId!) || []).length)
     try {
       enqueue(() => gcForRoot(uploadsBase))
@@ -550,7 +557,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
       const path = args && typeof args.path === 'string' ? args.path : undefined
       if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
-      dropPendingRef(sessionId, path)
+      releaseRef(sessionId, path)
       const row0 = pending.get(sessionId)
       probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (row0 ? row0.length : 0))
       return { ok: true }
@@ -605,7 +612,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
 
     // 1) Drop this session's pending ref (always; the user is done with it).
-    dropPendingRef(sessionId, path)
+    releaseRef(sessionId, path)
     probe('DELETE-SESSION sid=' + sessionId + ' path=' + path)
 
     // 2) Cross-session safety: another live session still references it -> keep file.
@@ -748,11 +755,297 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     // the very guard that protected them.
     if (sessionId) {
       for (const row of results) {
-        if (row.ok && row.removed) dropPendingRef(sessionId, row.path)
+        if (row.ok && row.removed) releaseRef(sessionId, row.path)
       }
     }
     probe('DELETE-MANY n=' + paths.length + ' removed=' + removed + ' skipped=' + skipped + ' failed=' + failed)
     return { ok: failed === 0, removed, skipped, failed, results }
+  }
+
+  // --- send-time folding ---------------------------------------------------------
+  // When a group in the card area reaches the configured threshold, the pre-step
+  // folds it for the injected context: new files move into a timestamped folder
+  // under uploads/, and an existing (dedup) group gets a paths.txt beside it.
+  // The folder is a staging area for the conversation, not a second archive:
+  // once the session's cards are gone the files move back to the uploads root.
+
+  interface FoldState {
+    stamp: string
+    newFolder: string | null
+    existingFolder: string | null
+  }
+  const folds = new Map<string, FoldState>()
+
+  /** Configured fold threshold, clamped to the settings panel's 2..100 range. */
+  const foldThreshold = (): number => {
+    let raw: unknown = undefined
+    if (typeof deps.readConfig === 'function') {
+      try {
+        const cfg = deps.readConfig()
+        if (cfg && typeof cfg === 'object') raw = (cfg as { foldThreshold?: unknown }).foldThreshold
+      } catch {
+        // ignore malformed config
+      }
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return 100
+    return Math.max(2, Math.min(100, Math.floor(n)))
+  }
+
+  /** Local-time batch stamp: YYYY-MM-DD-hh-mm-ss. */
+  const stampNow = (): string => {
+    const d = new Date()
+    const p = (v: number): string => String(v).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`
+  }
+
+  /** First free folder: <stamp>, <stamp>-2, ... with an optional suffix. */
+  async function allocateFolder(uploadsDir: string, stamp: string, suffix: string): Promise<string | null> {
+    for (let i = 0; i < 100; i += 1) {
+      const candidate = uploadsDir + '/' + stamp + (i === 0 ? '' : '-' + i) + (suffix ? '-' + suffix : '')
+      const info = await deps.statPath(candidate)
+      if (!info) return candidate
+    }
+    return null
+  }
+
+  /** Point every index entry that still names `from` at `to`. */
+  async function rewriteIndexPath(from: string, to: string): Promise<void> {
+    try {
+      const bases = await rootsMatchingPath(from)
+      for (const base of bases) {
+        const uploadsDir = base + '/uploads'
+        const index = await loadIndex(uploadsDir)
+        let changed = false
+        for (const k of Object.keys(index)) {
+          if (index[k].path === from) {
+            index[k].path = to
+            changed = true
+          }
+        }
+        if (changed) await saveIndex(uploadsDir, index)
+      }
+    } catch (err) {
+      log('dfu fold index rewrite failed:', errText(err))
+    }
+  }
+
+  // Move one pending entry into `folder`, keeping the index and the entry's abs
+  // path in sync. A repeat send is a no-op: the entry already sits inside.
+  async function moveEntryInto(folder: string, entry: PendingEntry): Promise<boolean> {
+    if (entry.abs.indexOf(folder + '/') === 0) return true
+    if (typeof deps.moveFile !== 'function') return false
+    const target = await allocateTarget(folder, entry.name)
+    if (!target) return false
+    try {
+      if (typeof deps.ensureDir === 'function') await deps.ensureDir(folder)
+      const moved = await deps.moveFile(entry.abs, target)
+      if (!moved || !moved.ok) {
+        log('dfu fold move failed:', entry.abs, moved && moved.error)
+        return false
+      }
+      await rewriteIndexPath(entry.abs, target)
+      entry.abs = target
+      return true
+    } catch (err) {
+      log('dfu fold error:', errText(err))
+      return false
+    }
+  }
+
+  /** Fold (or continue folding) the session's new-file group into its folder. */
+  async function foldNewGroup(sid: string, entries: PendingEntry[]): Promise<boolean> {
+    let state = folds.get(sid)
+    try {
+      const base = await deps.uploadsRoot(sid)
+      const uploadsDir = base + '/uploads'
+      if (!state) {
+        const stamp = stampNow()
+        const folder = await allocateFolder(uploadsDir, stamp, '')
+        if (!folder) return false
+        state = { stamp, newFolder: folder, existingFolder: null }
+        folds.set(sid, state)
+      }
+      if (!state.newFolder) {
+        state.newFolder = await allocateFolder(uploadsDir, state.stamp, '')
+        if (!state.newFolder) return false
+      }
+      let folded = false
+      for (const entry of entries) folded = (await moveEntryInto(state.newFolder, entry)) || folded
+      probe('FOLD-NEW sid=' + sid + ' folder=' + state.newFolder + ' n=' + entries.length)
+      return folded
+    } catch (err) {
+      log('dfu fold new group failed:', errText(err))
+      return false
+    }
+  }
+
+  /** Fold the existing (dedup) group into paths.txt in its helper folder. */
+  async function foldExistingGroup(sid: string, entries: PendingEntry[]): Promise<boolean> {
+    let state = folds.get(sid)
+    try {
+      const base = await deps.uploadsRoot(sid)
+      const uploadsDir = base + '/uploads'
+      if (!state) {
+        const stamp = stampNow()
+        const folder = await allocateFolder(uploadsDir, stamp, 'existing')
+        if (!folder) return false
+        state = { stamp, newFolder: null, existingFolder: folder }
+        folds.set(sid, state)
+      }
+      if (!state.existingFolder) {
+        state.existingFolder = await allocateFolder(uploadsDir, state.stamp, 'existing')
+        if (!state.existingFolder) return false
+      }
+      if (typeof deps.ensureDir === 'function') await deps.ensureDir(state.existingFolder)
+      await deps.writeTextFile(state.existingFolder + '/paths.txt', entries.map((e) => e.abs).join('\n'))
+      probe('FOLD-EXISTING sid=' + sid + ' folder=' + state.existingFolder + ' n=' + entries.length)
+      return true
+    } catch (err) {
+      log('dfu fold existing group failed:', errText(err))
+      return false
+    }
+  }
+
+  /** Move a folded session's files back to the uploads root, drop the folders. */
+  async function unfoldSession(sid: string): Promise<void> {
+    const state = folds.get(sid)
+    if (!state) return
+    folds.delete(sid)
+    try {
+      const base = await deps.uploadsRoot(sid)
+      const uploadsDir = base + '/uploads'
+      if (state.newFolder && typeof deps.listDir === 'function') {
+        const names = (await deps.listDir(state.newFolder)) || []
+        for (const name of names) {
+          const from = state.newFolder + '/' + name
+          const target = await allocateTarget(uploadsDir, name)
+          if (!target) continue
+          try {
+            const moved = typeof deps.moveFile === 'function' ? await deps.moveFile(from, target) : null
+            if (moved && moved.ok) await rewriteIndexPath(from, target)
+          } catch (err) {
+            log('dfu unfold move failed:', errText(err))
+          }
+        }
+      }
+      if (state.existingFolder && typeof deps.deleteFile === 'function') {
+        try {
+          await deps.deleteFile(state.existingFolder + '/paths.txt')
+        } catch {
+          // best effort
+        }
+      }
+      if (typeof deps.removeDir === 'function') {
+        if (state.existingFolder) {
+          try {
+            await deps.removeDir(state.existingFolder)
+          } catch {
+            // best effort
+          }
+        }
+        if (state.newFolder) {
+          try {
+            await deps.removeDir(state.newFolder)
+          } catch {
+            // best effort
+          }
+        }
+      }
+      probe('UNFOLD sid=' + sid)
+    } catch (err) {
+      log('dfu unfold failed:', errText(err))
+    }
+  }
+
+  // Release one session reference; when that empties the card area, unpack.
+  function releaseRef(sessionId: string, absPath: string): void {
+    dropPendingRef(sessionId, absPath)
+    const row = pending.get(sessionId)
+    if ((!row || row.length === 0) && folds.has(sessionId)) {
+      try {
+        enqueue(() => unfoldSession(sessionId))
+      } catch {
+        // non-fatal
+      }
+    }
+  }
+
+  const FOLD_FOLDER_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}(-\d+)?(-existing)?$/
+
+  /** Startup sweep: unpack timestamp folders a previous run left behind. */
+  async function unfoldOrphanFolders(): Promise<void> {
+    // Never unpack a folder a live session is currently using; only stale
+    // folders from a previous run (or a crashed session) are swept.
+    const active = new Set<string>()
+    for (const state of folds.values()) {
+      if (state.newFolder) active.add(state.newFolder)
+      if (state.existingFolder) active.add(state.existingFolder)
+    }
+    let roots: string[] = []
+    try {
+      if (typeof deps.listUploadRoots === 'function') roots = (await deps.listUploadRoots()) || []
+    } catch {
+      return
+    }
+    for (const r of roots) {
+      const base = String(r || '')
+      if (!base || typeof deps.listDir !== 'function') continue
+      const uploadsDir = base + '/uploads'
+      let names: string[] = []
+      try {
+        names = (await deps.listDir(uploadsDir)) || []
+      } catch {
+        continue
+      }
+      for (const name of names) {
+        if (!FOLD_FOLDER_RE.test(name)) continue
+        const folder = uploadsDir + '/' + name
+        if (active.has(folder)) continue
+        if (name.endsWith('-existing')) {
+          if (typeof deps.deleteFile === 'function') {
+            try {
+              await deps.deleteFile(folder + '/paths.txt')
+            } catch {
+              // best effort
+            }
+          }
+          if (typeof deps.removeDir === 'function') {
+            try {
+              await deps.removeDir(folder)
+            } catch {
+              // best effort
+            }
+          }
+          continue
+        }
+        let files: string[] = []
+        try {
+          files = (await deps.listDir(folder)) || []
+        } catch {
+          continue
+        }
+        for (const file of files) {
+          const from = folder + '/' + file
+          const target = await allocateTarget(uploadsDir, file)
+          if (!target) continue
+          try {
+            const moved = typeof deps.moveFile === 'function' ? await deps.moveFile(from, target) : null
+            if (moved && moved.ok) await rewriteIndexPath(from, target)
+          } catch {
+            // best effort
+          }
+        }
+        if (typeof deps.removeDir === 'function') {
+          try {
+            await deps.removeDir(folder)
+          } catch {
+            // best effort
+          }
+        }
+        probe('UNFOLD-ORPHAN folder=' + folder)
+      }
+    }
   }
 
   // --- garbage collection (lazy TTL sweep) ---------------------------------------
@@ -871,40 +1164,73 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       if (hasMarker) return decision
 
       const multimodal = await supportsImages(agent.options && agent.options.provider, agent.options && agent.options.model, payload.signal)
-
       const limits = deps.attachmentLimits ? deps.attachmentLimits() : null
-      const blocks: Array<{ type: string; attachment?: unknown; text?: string }> = []
-      const paths: string[] = []
+      // An image that becomes a native image block never appears in the injected
+      // path text, so it neither counts toward the fold threshold nor moves into
+      // the fold folder; only images the model cannot take natively join a
+      // group and fold like ordinary attachments.
+      const nativeImage = (entry: PendingEntry): boolean =>
+        limits !== null && multimodal && limits.mediaTypes.includes(entry.mime) &&
+        entry.size <= limits.maxImageBytes && !!deps.saveImage && !!deps.readBytes
 
-      for (const entry of row) {
-        const isImage = limits !== null && limits.mediaTypes.includes(entry.mime)
-        if (limits !== null && multimodal && isImage && entry.size <= limits.maxImageBytes && deps.saveImage && deps.readBytes) {
-          try {
-            const bytes = await deps.readBytes(entry.abs, limits.maxImageBytes, payload.signal)
-            if (!bytes) throw new Error('read failed')
-            const ref = await deps.saveImage({ data: bytes, mediaType: entry.mime, name: entry.name })
-            blocks.push({ type: 'image', attachment: ref })
-          } catch {
-            paths.push(entry.abs)
-          }
-        } else {
-          paths.push(entry.abs)
-        }
+      const countables = row.filter((entry) => !nativeImage(entry))
+      const newGroup = countables.filter((entry) => entry.dedup !== true)
+      const existingGroup = countables.filter((entry) => entry.dedup === true)
+      const threshold = foldThreshold()
+      let state = folds.get(sid)
+      if (newGroup.length > 0 && ((state && state.newFolder) || newGroup.length >= threshold)) {
+        await enqueue(() => foldNewGroup(sid, newGroup))
       }
+      if (existingGroup.length > 0 && ((state && state.existingFolder) || existingGroup.length >= threshold)) {
+        await enqueue(() => foldExistingGroup(sid, existingGroup))
+      }
+      state = folds.get(sid)
 
-      if (blocks.length > 0 || paths.length > 0) {
+      const blocks: Array<{ type: string; attachment?: unknown; text?: string }> = []
+      const folderLines: string[] = []
+      const pathLines: string[] = []
+      let newFolderFiles = 0
+      for (const entry of row) {
+        if (state && state.newFolder && entry.abs.indexOf(state.newFolder + '/') === 0) {
+          newFolderFiles += 1
+          continue
+        }
+        if (nativeImage(entry)) {
+          try {
+            const bytes = await deps.readBytes!(entry.abs, limits!.maxImageBytes, payload.signal)
+            if (!bytes) throw new Error('read failed')
+            const ref = await deps.saveImage!({ data: bytes, mediaType: entry.mime, name: entry.name })
+            blocks.push({ type: 'image', attachment: ref })
+            continue
+          } catch {
+            pathLines.push('- ' + entry.abs)
+            continue
+          }
+        }
+        // The folded existing group is represented by its paths.txt alone.
+        if (state && state.existingFolder && entry.dedup === true) continue
+        pathLines.push('- ' + entry.abs)
+      }
+      if (newFolderFiles > 0 && state && state.newFolder) {
+        folderLines.push('- ' + state.newFolder + '/ \u2014 ' + newFolderFiles + ' uploaded files in this folder; list it with your tools.')
+      }
+      if (state && state.existingFolder && existingGroup.length > 0) {
+        folderLines.push('- ' + state.existingFolder + '/paths.txt \u2014 one uploaded file path per line.')
+      }
+      const lines = folderLines.concat(pathLines)
+
+      if (blocks.length > 0 || lines.length > 0) {
         const push = blocks.slice()
-        if (paths.length > 0) {
-          const lines = paths.map((p) => '- ' + p).join('\n')
+        if (lines.length > 0) {
           const text =
             '\n-----\n[Attached files] Some files have uploaded with this message:\n' +
-            lines +
+            lines.join('\n') +
             '\nRead the files or use tools to analyse (like vision tools), then answer the user.'
           push.push({ type: 'text', text })
         }
         const enriched = { ...target, content: target.content.concat(push) }
         const newMessages = decision.messages.map((m) => (m === target ? enriched : m))
-        probe('INJECT sid=' + sid + ' blocks=' + blocks.length + ' paths=' + paths.length + ' pendingN=' + row.length + ' msgContent=' + enriched.content.length)
+        probe('INJECT sid=' + sid + ' blocks=' + blocks.length + ' paths=' + pathLines.length + ' folders=' + folderLines.length + ' pendingN=' + row.length + ' msgContent=' + enriched.content.length)
         return { ...decision, messages: newMessages }
       }
     } catch (err) {
@@ -925,7 +1251,10 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     // in-flight upload that is rewriting the shared index.
     list: () => listFiles(),
     deleteMany: (args) => enqueue(() => deleteMany(args)),
-    collect: () => enqueue(() => gcForRoots()),
+    collect: () => enqueue(async () => {
+      await unfoldOrphanFolders()
+      await gcForRoots()
+    }),
     preStep,
   }
 }
