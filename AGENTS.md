@@ -94,12 +94,26 @@ writes it. Agents must not invent release entries:
   heading, bold category groups (for example `**CI/CD**`), and bullets that
   point at the commit short hash.
 
+## Release conventions
+
+- The git tag is the **bare** `package.json` version: `1.0.0-alpha.3`, never
+  `v1.0.0-alpha.3`. `.github/workflows/release.yml` triggers on bare version
+  tags only, and a `v`-prefixed tag fails the manual-dispatch validation.
+- The release commit subject keeps the `v` prefix:
+  `release: v1.0.0-alpha.3`.
+- The annotated tag message carries the release commit hash:
+  `git tag -a 1.0.0-alpha.3 -m "commit <short-hash>"`.
+- The GitHub Release title keeps the `v` prefix: `v1.0.0-alpha.3`.
+- Push the release commit and the tag together:
+  `git push origin main 1.0.0-alpha.3`.
+
 ## Workflow notes
 
 - Never commit runtime artifacts (`.dfu-*`, `uploads/`) — see `.gitignore`.
 - Do not add secrets, tokens, or personal absolute paths (e.g.
   `/home/<user>/...`) to committed files.
 - Verify SSH signatures on commits when the repository uses commit signing.
-- Releases are tag-driven: pushing a version tag (`<version>` or
-  `v<version>`) runs `.github/workflows/release.yml`. Never move or delete a
-  published tag — bump the version instead.
+- Releases are tag-driven: pushing a bare version tag (`1.0.0-alpha.3`) runs
+  `.github/workflows/release.yml`; a `v`-prefixed tag does not trigger it — the
+  prefix belongs to the release commit subject and the GitHub Release title.
+  Never move or delete a published tag — bump the version instead.

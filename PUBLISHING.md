@@ -78,9 +78,10 @@ body, so no notes are generated from commits or PRs.
 
 ### Cutting a release
 
-The tag name is the exact `package.json` version, optionally `v`-prefixed —
-both `1.0.0-alpha.2` and `v1.0.0-alpha.2` trigger the workflow, which strips a
-leading `v` before comparing. Two steps:
+The tag name is the exact `package.json` version **without** a `v` prefix
+(`1.0.0-alpha.3`); the prefix belongs to the release commit subject
+(`release: v1.0.0-alpha.3`) and the GitHub Release title (`v1.0.0-alpha.3`).
+A `v`-prefixed tag does not trigger the workflow. Two steps:
 
 1. Add the release's section to `CHANGELOG.md` and commit it:
 
@@ -97,21 +98,27 @@ leading `v` before comparing. Two steps:
    git commit -m "docs: update the 1.0.0-alpha.2 changelog"
    ```
 
-2. Bump the version and create the tag:
+2. Bump the version, commit as `release: v<version>`, and tag the bare
+   version:
 
    ```bash
-   # pre-release: 1.0.0-alpha.1 -> 1.0.0-alpha.2 (same for -beta.N / -rc.N)
-   npm version 1.0.0-alpha.2 -m "chore(release): %s"
-   # final release
-   npm version 1.0.0 -m "chore(release): %s"
+   # pre-release: 1.0.0-alpha.2 -> 1.0.0-alpha.3 (same for -beta.N / -rc.N)
+   npm version 1.0.0-alpha.3 --no-git-tag-version
+   git commit -am "release: v1.0.0-alpha.3"
 
-   # push the commits and the tag — the workflow does the rest
-   git push origin main --follow-tags
+   # annotated bare tag; the message carries the release commit hash
+   git tag -a 1.0.0-alpha.3 -m "commit $(git rev-parse --short HEAD)"
+
+   # push the commit and the tag — the workflow does the rest
+   git push origin main 1.0.0-alpha.3
    ```
 
-`npm version` writes `package.json`, commits `chore(release): <version>` and
-creates the annotated `v<version>` tag (`--follow-tags` pushes it). The
-workflow then:
+   A final release works the same way (`npm version 1.0.0
+   --no-git-tag-version`, commit `release: v1.0.0`, tag `1.0.0`).
+
+`npm version --no-git-tag-version` only rewrites `package.json`; the release
+commit and the annotated bare tag are created explicitly, so the tag never
+picks up the `v` prefix. The workflow then:
 
 1. rejects a tag that does not match `package.json`, is not valid semver, or
    whose commit is not reachable from `main`;
@@ -121,10 +128,10 @@ workflow then:
    committed bundle is not reproducible (`git status` must stay clean after
    the build);
 4. packs the npm tarball and asserts the shipped files are inside it;
-5. creates a **GitHub Release** whose body is the extracted section, with the
-   tarball attached. Any semver prerelease (`-alpha.N`, `-beta.N`, `-rc.N`,
-   ...) is flagged as a **pre-release**; a final `X.Y.Z` release is marked
-   latest;
+5. creates a **GitHub Release** titled `v<version>` whose body is the
+   extracted section, with the tarball attached. Any semver prerelease
+   (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a **pre-release**; a
+   final `X.Y.Z` release is marked latest;
 6. publishes to npm **when** `NODE_AUTH_TOKEN` is configured — prereleases use
    `--tag next` so a plain `dsh plugin ... add dsh-web-file-uploader` keeps
    resolving to the last stable version, final releases use `latest`; both are
@@ -135,7 +142,7 @@ workflow then:
 Preview the notes locally before tagging:
 
 ```bash
-node scripts/release-notes.mjs 1.0.0-alpha.2
+node scripts/release-notes.mjs 1.0.0-alpha.3
 ```
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its
