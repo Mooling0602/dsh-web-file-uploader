@@ -74,3 +74,41 @@ No other real source code changes.
   a0ca332.
 
 No functional changes to the plugin's runtime behavior.
+
+## 1.0.0-alpha.4
+
+### Breaking changes
+
+- Replace the official add-file entry instead of hiding an official composer
+  button: the shell's Add → File row, shared by the add (+) menu and the /
+  slash menu, is swapped in place for this plugin's own attach-file row, and
+  the standalone composer button is now governed by two settings — "Replace
+  the official add-file entry" and "Always show the standalone attach button"
+  — in commit 3a7ffdf.
+- Rename the replacement setting and persist three keys in the settings file
+  (`{ ttl, replaceOfficial, alwaysShowButton }`) in commit 3a7ffdf.
+
+### Fixes
+
+- Place the composer paperclip button directly to the right of the add button,
+  ahead of the permission/mode chips, in commit 434ed56.
+- Hide the permanent delete action on cards created by a deduplicated
+  re-upload: such a card borrows a shared stored copy and now only
+  un-references it (×), leaving file-level deletion to the settings panel, in
+  commit 7f73a31.
+
+### CI/CD
+
+- Compose each release body from CHANGELOG.md's Header, version section and
+  Endfix, derive the Full Changelog compare link from the previous release tag
+  and adopt the Header/Endfix format in commits 8ee22a4 and 6d97000.
+
+### Docs
+
+- Describe the current composer-button placement and add-menu replacement
+  behavior, the three-key settings config and the new card actions in commit
+  59581f6.
+- Add the commit-type selection rules and allow amending unpushed commits in
+  commits 2fd89f8 and b8d3054.
+- Allow agents to write changelog entries when the maintainer explicitly
+  authorizes it in commit 1a34695.
