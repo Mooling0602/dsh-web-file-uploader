@@ -1387,18 +1387,24 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
 
   // --- composer placement ---------------------------------------------------
 
-  // The shell draws the composer tools as one flex row:
+  // The shell draws the composer tools as one flex row, and this plugin's
+  // button arrives through its last slot:
   //
-  //   [+ menu] [official attach] [file input] [access/plan chips] [slot: left]
+  //   older shells:   [+ menu] [official attach] [file input] [mode chips]  [slot: left]
+  //   current shell:  [+ add menu]               [file input] [perm/plan chips] [slot: left]
   //
-  // and this plugin's button arrives through that last slot — to the right of
-  // the mode chips, a few pixels away from the official paperclip it so closely
-  // resembles. Two placements are handled here, neither of which touches a node
-  // React owns:
+  // DSH moved the official upload into the add menu, so the button belongs
+  // directly right of the add button — not at the far end of the row where the
+  // slot renders it and not hidden behind the permission chips. Placement is
+  // flex `order` on the items of that row, which touches no node React owns:
   //
-  //   - our button moves next to the official one (flex `order`; valid because
-  //     the shell's slot wrapper is `display: contents`, which makes our label a
-  //     flex item of the row itself);
+  //   - our button orders itself right after the control the shell uses for its
+  //     composer actions: its official paperclip when the shell still draws
+  //     one, otherwise the first tool control (the add button that absorbed the
+  //     upload action). The shell's slot wrapper is `display: contents`, so our
+  //     label is itself a flex item of the row;
+  //   - everything the shell draws after that control follows ours with a
+  //     higher `order`, keeping its own sequence;
   //   - when the user asks for it, the official button is hidden so the row
   //     keeps exactly one upload control and ours stands in its place.
   //
@@ -1445,6 +1451,18 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   }
 
   /**
+   * The direct child of the row that carries a control the shell may wrap.
+   * @param control - control inside the row.
+   * @param row - the flex row that lays the control out.
+   * @returns that row's child, or null when the control is not inside the row.
+   */
+  function flexItemOf(control: HTMLElement, row: HTMLElement): HTMLElement | null {
+    let item: HTMLElement | null = control
+    while (item !== null && item.parentElement !== row) item = item.parentElement
+    return item
+  }
+
+  /**
    * The shell's attach button inside one tools row: the paperclip glyph, never
    * the settings-nav mark (which reuses the same glyph).
    * @returns the button, or null when this row is not the shell's composer.
@@ -1462,65 +1480,75 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     return null
   }
 
+  /** The flex item this plugin contributes: the slot outlet is `display: contents`. */
+  function ourComposerItem(anchor: HTMLElement): HTMLElement {
+    const label = anchor.querySelector('.dfu-attach')
+    return label === null ? anchor : label as HTMLElement
+  }
+
   /**
-   * Place one composer around the shell's attach button.
-   * @returns the attach button this row was placed against, or null.
+   * Place this plugin's button in one composer row, directly after the control
+   * the shell uses for its own composer actions.
+   * @param anchor - this plugin's slot outlet inside the row.
+   * @returns the row and the official attach button it was placed against (null
+   * on a shell without one), or null when the row cannot be recognised.
    */
-  function layoutComposer(anchor: HTMLElement): HTMLElement | null {
+  function layoutComposer(anchor: HTMLElement): { row: HTMLElement; attach: HTMLElement | null } | null {
     const row = anchor.parentElement
     if (row === null) return null
+    // Sit right after the shell's own attach button while it still draws one;
+    // the current shell folded the upload into its first tool control (the add
+    // menu button), which is then the control to follow.
     const attach = findAttachButton(row)
-    if (attach === null) return null
-    // The flex item is the button itself, unless the shell wraps it.
-    let attachItem: HTMLElement | null = attach
-    while (attachItem !== null && attachItem.parentElement !== row) attachItem = attachItem.parentElement
-    if (attachItem === null) return null
+    const behind = attach === null ? row.firstElementChild : flexItemOf(attach, row)
+    if (behind === null) return null
     applyOrder(anchor, OUR_ORDER)
-    const label = anchor.querySelector('.dfu-attach')
-    if (label !== null) applyOrder(label as HTMLElement, OUR_ORDER)
-    // Everything the shell draws after its attach button follows ours.
+    applyOrder(ourComposerItem(anchor), OUR_ORDER)
+    // Everything the shell draws after that control follows ours; the controls
+    // before it keep the default order, so the row's sequence is preserved.
     let passed = false
     const children = row.children
     for (let i = 0; i < children.length; i += 1) {
-      const child = children[i]
+      const child = children[i] as HTMLElement
       if (!passed) {
-        if (child === attachItem) passed = true
+        if (child === behind) passed = true
         continue
       }
-      if (child !== anchor) applyOrder(child as HTMLElement, AFTER_ORDER)
+      if (child !== anchor) applyOrder(child, AFTER_ORDER)
     }
-    applyHidden(attach, replaceOfficial)
-    return attach
+    if (attach !== null) applyHidden(attach, replaceOfficial)
+    return { row, attach }
   }
 
   // The row already laid out, so the steady state costs a few property reads
   // instead of a document-wide scan per mutation — the shell mutates the DOM
   // continuously while a reply streams. Any node of it being replaced drops the
   // cache and forces a rescan.
-  let laidOut: { row: HTMLElement; anchor: HTMLElement; attach: HTMLElement } | null = null
+  let laidOut: { row: HTMLElement; anchor: HTMLElement } | null = null
 
   function applyComposerLayout() {
     if (typeof document === 'undefined') return
-    if (laidOut !== null && laidOut.row.isConnected && laidOut.anchor.isConnected && laidOut.attach.isConnected) {
+    if (laidOut !== null && laidOut.row.isConnected && laidOut.anchor.isConnected) {
       layoutComposer(laidOut.anchor)
       return
     }
     laidOut = null
     const anchors = document.querySelectorAll<HTMLElement>(SLOT_ANCHOR)
+    let sawAttach = false
     for (let i = 0; i < anchors.length; i += 1) {
       const anchor = anchors[i]
-      const attach = layoutComposer(anchor)
-      if (attach !== null && anchor.parentElement !== null) {
-        laidOut = { row: anchor.parentElement, anchor: anchor, attach: attach }
-      }
+      const placed = layoutComposer(anchor)
+      if (placed === null) continue
+      sawAttach = sawAttach || placed.attach !== null
+      laidOut = { row: placed.row, anchor: anchor }
     }
-    if (laidOut === null && anchors.length > 0 && replaceOfficial && !warnedMissingAttach) {
-      // A composer without a recognizable attach button (a shell whose glyph or
-      // structure changed): the official button stays visible and ours keeps its
-      // slot, which is the pre-replacement behaviour rather than a broken row.
+    if (laidOut !== null && !sawAttach && replaceOfficial && !warnedMissingAttach) {
+      // The current shell folded the official upload into the add menu, so the
+      // replace-official switch has nothing left to replace; our button sits
+      // next to the add button either way.
       warnedMissingAttach = true
       if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-        console.warn('[dsh-web-file-uploader] official attach button not found; keeping the plugin button in its slot')
+        console.warn('[dsh-web-file-uploader] the shell no longer draws an official attach button; the replace-official switch has no effect')
       }
     }
   }
