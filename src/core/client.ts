@@ -67,6 +67,9 @@ export interface ClientCoreDeps {
 
 export interface UploadArgs {
   sessionId?: string
+  /** Composer card id; the host records it on the pending entry, so removal
+   *  keeps working after a send-time fold moves the file. */
+  id?: string
   name: string
   mime?: string
   size?: number
@@ -87,6 +90,8 @@ export interface UploadResult {
 
 export interface PathArgs {
   sessionId?: string
+  /** Composer card id (stable across folds); `path` is the fallback. */
+  id?: string
   path: string
 }
 
@@ -455,10 +460,10 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
 
   // Fire-and-forget un-reference: the host keeps the file on disk, this session
   // just stops injecting it.
-  const unref = (sessionId: string | undefined, path: string | null | undefined) => {
-    if (!path) return
+  const unref = (sessionId: string | undefined, path: string | null | undefined, id?: string) => {
+    if (!path && !id) return
     try {
-      remove({ sessionId: sessionId, path: path }).catch(() => {})
+      remove({ sessionId: sessionId, id: id, path: path || '' }).catch(() => {})
     } catch {
       // host unavailable — ignore
     }
@@ -480,7 +485,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       store.update(sessionId, id, { confirmCancel: true })
       return
     }
-    if (entry.path) unref(sessionId, entry.path)
+    if (entry.path) unref(sessionId, entry.path, id)
     store.remove(sessionId, id)
   }
 
@@ -513,9 +518,9 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     if (entry && entry.path) {
       try {
         if (typeof del === 'function') {
-          del({ sessionId: sessionId, path: entry.path }).catch(() => {})
+          del({ sessionId: sessionId, id: id, path: entry.path }).catch(() => {})
         } else if (remove) {
-          remove({ sessionId: sessionId, path: entry.path }).catch(() => {})
+          remove({ sessionId: sessionId, id: id, path: entry.path }).catch(() => {})
         }
       } catch {
         // host unavailable — ignore
@@ -657,6 +662,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         }
         upload({
           sessionId: sessionId,
+          id: id,
           name: file.name,
           mime: file.type || '',
           size: file.size,
@@ -668,12 +674,21 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             const entry = store.files(sessionId).find((x) => x.id === id)
             const cancelled = entry !== undefined && entry.status === 'cancelling'
             if (res && res.ok) {
+              // Another card already owns this stored path (a repeat upload
+              // dedups onto the same copy): merge into that card instead of
+              // showing a duplicate, and release this upload's reference so the
+              // host's pending count stays in step with the visible cards.
+              const merged = res.path !== undefined &&
+                store.files(sessionId).some((x) => x.id !== id && x.path === res.path)
               if (cancelled) {
                 // Lost the race by a hair: the host had already published the
                 // file. Take the reference straight back out so it is never
                 // injected and the TTL sweep can reclaim it.
                 store.remove(sessionId, id)
-                unref(sessionId, res.path)
+                unref(sessionId, res.path, id)
+              } else if (merged) {
+                store.remove(sessionId, id)
+                unref(sessionId, res.path, id)
               } else if (entry !== undefined) {
                 store.update(sessionId, id, {
                   status: 'done',
@@ -682,7 +697,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
                   dedup: res.dedup === true,
                 })
               } else {
-                unref(sessionId, res.path)
+                unref(sessionId, res.path, id)
               }
             } else if (cancelled) {
               store.remove(sessionId, id)

@@ -159,6 +159,9 @@ export interface ListResult {
 /** A file being streamed in: staged on disk, published on commit. */
 export interface StagedEntry {
   sessionId?: string
+  /** Composer card id, echoed back on the pending entry so removal survives
+   *  a fold moving the file (the client's path goes stale, the id does not). */
+  cardId?: string
   name: string
   mime: string
   size: number
@@ -170,6 +173,8 @@ export interface StagedEntry {
 
 export interface BeginStreamArgs {
   sessionId?: string
+  /** Composer card id (see StagedEntry.cardId). */
+  id?: string
   name?: string
   mime?: string
   size?: number
@@ -189,6 +194,8 @@ export interface CommitStreamArgs {
 
 export interface PathArgs {
   sessionId?: string
+  /** Composer card id; preferred over `path`, which can go stale after a fold. */
+  id?: string
   path?: string
 }
 
@@ -302,7 +309,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
 
   // --- pending bookkeeping -----------------------------------------------------
 
-  function registerPending(sessionId: string | undefined, entry: { name: string; mime: string; size: number; abs: string; dedup?: boolean }): void {
+  function registerPending(sessionId: string | undefined, entry: { id?: string; name: string; mime: string; size: number; abs: string; dedup?: boolean }): void {
     if (!sessionId) return
     let row = pending.get(sessionId)
     if (!row) {
@@ -313,7 +320,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     // injected (or folded), never silently skipped. The injected text is
     // bounded by the fold threshold, not by dropping references.
     row.push({
-      id: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
+      id: entry.id || String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
       name: entry.name,
       mime: entry.mime,
       size: entry.size,
@@ -354,6 +361,16 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     }
   }
 
+  function dropPendingRefById(sessionId: string, id: string): boolean {
+    const row = pending.get(sessionId)
+    if (!row) return false
+    const i = row.findIndex((e) => e.id === id)
+    if (i < 0) return false
+    row.splice(i, 1)
+    if (row.length === 0) pending.delete(sessionId)
+    return true
+  }
+
   // A fold/unfold moves a stored file: every live reference to it — including
   // dedup cards in other sessions that share the copy — must follow, or its
   // injected path (and delete safety check) would point at a stale location.
@@ -371,6 +388,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
   // null when these bytes still have to be written.
   async function reuseExisting(
     sessionId: string | undefined,
+    cardId: string | undefined,
     name: string,
     mime: string,
     hash: string | null,
@@ -385,7 +403,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       const info = await deps.statPath(existing.path)
       if (!info) return null
       const bytes = info.size !== undefined ? info.size : size
-      registerPending(sessionId, { name, mime, size: bytes, abs: existing.path, dedup: true })
+      registerPending(sessionId, { id: cardId, name, mime, size: bytes, abs: existing.path, dedup: true })
       probe('DEDUP sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
       return { ok: true, name, path: existing.path, size: bytes, dedup: true }
     } catch {
@@ -411,6 +429,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
   // session's pending reference, and kick the lazy TTL sweep.
   async function publish(
     sessionId: string | undefined,
+    cardId: string | undefined,
     name: string,
     mime: string,
     hash: string | null,
@@ -426,7 +445,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         await saveIndex(uploadsDir, index)
       }
     }
-    registerPending(sessionId, { name, mime, size, abs, dedup: false })
+    registerPending(sessionId, { id: cardId, name, mime, size, abs, dedup: false })
     probe('UPLOAD sid=' + sessionId + ' file=' + name + ' pendingN=' + (pending.get(sessionId!) || []).length)
     try {
       enqueue(() => gcForRoot(uploadsBase))
@@ -484,6 +503,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
       const entry: StagedEntry = {
         sessionId: sessionId,
+        cardId: args && typeof args.id === 'string' && args.id !== '' ? args.id : undefined,
         name: name,
         mime: mime,
         size: Number.isFinite(declared) && declared > 0 ? declared : 0,
@@ -518,7 +538,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         // keep size 0 when the staged file cannot be stat'ed
       }
 
-      const reused = await reuseExisting(entry.sessionId, entry.name, entry.mime, hash, size, entry.uploadsDir)
+      const reused = await reuseExisting(entry.sessionId, entry.cardId, entry.name, entry.mime, hash, size, entry.uploadsDir)
       if (reused) {
         staged.delete(id)
         await dropTemp(entry.tempPath)
@@ -544,7 +564,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       }
       staged.delete(id)
       probe('STREAM-COMMIT sid=' + entry.sessionId + ' file=' + entry.name + ' bytes=' + size)
-      return await publish(entry.sessionId, entry.name, entry.mime, hash, size, entry.uploadsDir, entry.uploadsBase, abs)
+      return await publish(entry.sessionId, entry.cardId, entry.name, entry.mime, hash, size, entry.uploadsDir, entry.uploadsBase, abs)
     } catch (err) {
       staged.delete(id)
       await dropTemp(entry.tempPath)
@@ -568,10 +588,16 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     try {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
       const path = args && typeof args.path === 'string' ? args.path : undefined
-      if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
-      releaseRef(sessionId, path)
+      const cardId = args && typeof args.id === 'string' && args.id !== '' ? args.id : undefined
+      if (!sessionId || (!path && !cardId)) return { ok: false, error: 'missing sessionId or path' }
+      // The path a client holds goes stale once a fold moves the file, so the
+      // card id is the reliable handle; the path stays as the fallback.
+      let releasedById = false
+      if (cardId) releasedById = dropPendingRefById(sessionId, cardId)
+      if (!releasedById && path) releaseRef(sessionId, path)
+      else if (releasedById) maybeUnfold(sessionId)
       const row0 = pending.get(sessionId)
-      probe('REMOVE sid=' + sessionId + ' path=' + path + ' pendingN=' + (row0 ? row0.length : 0))
+      probe('REMOVE sid=' + sessionId + ' path=' + path + ' byId=' + (releasedById ? 1 : 0) + ' pendingN=' + (row0 ? row0.length : 0))
       return { ok: true }
     } catch (err) {
       return { ok: false, error: errMsg(err) }
@@ -620,12 +646,24 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
 
   async function deleteFile(args: PathArgs): Promise<DeleteResult> {
     const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
-    const path = args && typeof args.path === 'string' ? args.path : undefined
-    if (!sessionId || !path) return { ok: false, error: 'missing sessionId or path' }
+    let path = args && typeof args.path === 'string' ? args.path : undefined
+    const cardId = args && typeof args.id === 'string' && args.id !== '' ? args.id : undefined
+    if (!sessionId || (!path && !cardId)) return { ok: false, error: 'missing sessionId or path' }
 
     // 1) Drop this session's pending ref (always; the user is done with it).
-    releaseRef(sessionId, path)
-    probe('DELETE-SESSION sid=' + sessionId + ' path=' + path)
+    //    Prefer the card id: a fold may have moved the file, making the client's
+    //    path stale while the pending entry knows the current location.
+    let releasedById = false
+    if (cardId) {
+      const row = pending.get(sessionId)
+      const entry = row ? row.find((e) => e.id === cardId) : undefined
+      if (entry) path = entry.abs
+      releasedById = dropPendingRefById(sessionId, cardId)
+    }
+    if (!releasedById && path) releaseRef(sessionId, path)
+    else if (releasedById) maybeUnfold(sessionId)
+    if (!path) return { ok: false, error: 'missing sessionId or path' }
+    probe('DELETE-SESSION sid=' + sessionId + ' path=' + path + ' byId=' + (releasedById ? 1 : 0))
 
     // 2) Cross-session safety: another live session still references it -> keep file.
     if (pendingRefs(path)) {
@@ -975,9 +1013,8 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     }
   }
 
-  // Release one session reference; when that empties the card area, unpack.
-  function releaseRef(sessionId: string, absPath: string): void {
-    dropPendingRef(sessionId, absPath)
+  // When a release empties the card area, unpack the session's fold folder.
+  function maybeUnfold(sessionId: string): void {
     const row = pending.get(sessionId)
     if ((!row || row.length === 0) && folds.has(sessionId)) {
       try {
@@ -986,6 +1023,18 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         // non-fatal
       }
     }
+  }
+
+  // Release one session reference; when that empties the card area, unpack.
+  function releaseRef(sessionId: string, absPath: string): void {
+    dropPendingRef(sessionId, absPath)
+    maybeUnfold(sessionId)
+  }
+
+  // The card id survives a fold moving the file, unlike the client's path.
+  function releaseRefById(sessionId: string, id: string): void {
+    dropPendingRefById(sessionId, id)
+    maybeUnfold(sessionId)
   }
 
   const FOLD_FOLDER_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}(-\d+)?(-existing)?$/

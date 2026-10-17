@@ -230,6 +230,7 @@ export function apply(ctx: PluginContext): void {
         const url = new URL(req.url || '/', 'http://localhost')
         const rawName = sanitizeName(url.searchParams.get('name'))
         const sessionId = url.searchParams.get('session') || ''
+        const cardId = url.searchParams.get('id') || ''
         const mime = url.searchParams.get('mime') || ''
         const declared = Number(url.searchParams.get('size')) || 0
         if (!rawName) {
@@ -242,7 +243,7 @@ export function apply(ctx: PluginContext): void {
         // bound left is disk space. commitStream publishes it under its final
         // name, or drops the staged copy when identical content is already
         // stored.
-        const begun = await core.beginStream({ sessionId, name: rawName, mime, size: declared })
+        const begun = await core.beginStream({ sessionId, id: cardId || undefined, name: rawName, mime, size: declared })
         if (!begun.ok) {
           sendJson(res, 400, begun)
           return
@@ -298,11 +299,12 @@ export function apply(ctx: PluginContext): void {
         const url = new URL(req.url || '/', 'http://localhost')
         const sessionId = url.searchParams.get('session') || ''
         const path = url.searchParams.get('path') || ''
-        if (!sessionId || !path) {
+        const cardId = url.searchParams.get('id') || ''
+        if (!sessionId || (!path && !cardId)) {
           sendJson(res, 400, { ok: false, error: 'missing session or path' })
           return
         }
-        const result = await core.remove({ sessionId, path })
+        const result = await core.remove({ sessionId, path: path || undefined, id: cardId || undefined })
         sendJson(res, result.ok ? 200 : 400, result)
       } catch (err) {
         sendJson(res, 500, { ok: false, error: errMsg(err) })
@@ -325,11 +327,12 @@ export function apply(ctx: PluginContext): void {
         const url = new URL(req.url || '/', 'http://localhost')
         const sessionId = url.searchParams.get('session') || ''
         const path = url.searchParams.get('path') || ''
-        if (!sessionId || !path) {
+        const cardId = url.searchParams.get('id') || ''
+        if (!sessionId || (!path && !cardId)) {
           sendJson(res, 400, { ok: false, error: 'missing session or path' })
           return
         }
-        const result = await core.delete({ sessionId, path })
+        const result = await core.delete({ sessionId, path: path || undefined, id: cardId || undefined })
         sendJson(res, result.ok ? 200 : 400, result)
       } catch (err) {
         sendJson(res, 500, { ok: false, error: errMsg(err) })

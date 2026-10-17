@@ -113,7 +113,11 @@ Re-uploads cannot flood storage:
 3. If identical content is uploaded again (same name or different name), the
    existing stored copy is **reused** — no new file is written, no `-1`
    suffix copy is created, and the response carries `dedup: true`.
-4. Uploads are serialized through a promise queue so concurrent identical
+4. When the reused copy already has a card in the current session, the
+   re-upload **merges into that card** instead of adding a duplicate one: the
+   new card is closed and its reference released, so the visible card count
+   matches the distinct stored paths.
+5. Uploads are serialized through a promise queue so concurrent identical
    uploads cannot race; a stale index entry (file deleted) falls back to a
    fresh store.
 

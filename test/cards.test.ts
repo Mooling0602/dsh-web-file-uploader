@@ -122,8 +122,8 @@ const locale = {
 
 interface UploadReply { ok: boolean; path?: string; size?: number; dedup?: boolean; error?: string }
 const uploads: string[] = []
-const removes: Array<{ sessionId?: string; path: string }> = []
-const deletes: Array<{ sessionId?: string; path: string }> = []
+const removes: Array<{ sessionId?: string; path: string; id?: string }> = []
+const deletes: Array<{ sessionId?: string; path: string; id?: string }> = []
 let reply: UploadReply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
 let maxFilesSetting = 100
 
@@ -234,6 +234,7 @@ await new Promise((r) => setTimeout(r, 0))
 ok('trash calls the delete RPC once', deletes.length === 1, deletes)
 ok('trash sends the card path', deletes[0] && deletes[0].path === '/u/shared.txt', deletes)
 ok('trash sends the session id', deletes[0] && deletes[0].sessionId === S, deletes)
+ok('trash sends the stable card id', typeof deletes[0]?.id === 'string' && deletes[0]!.id!.length > 0, deletes)
 tree = cards()
 ok('the deleted card is dropped', byClass(tree, 'dfu-chip').length === 0)
 
@@ -256,8 +257,28 @@ ok('no dedup hint leaks into the en card', dicts.zh.dedupCardHint !== dicts.en.d
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
 await new Promise((r) => setTimeout(r, 0))
 ok('remove on a dedup card calls the remove RPC', removes.some((r) => r.path === '/u/shared.txt'), removes)
+ok('remove sends the stable card id', removes.some((r) => r.path === '/u/shared.txt' && typeof r.id === 'string'), removes)
 tree = cards()
 ok('remove on a dedup card drops it', byClass(tree, 'dfu-chip').length === 0)
+
+// ---- 2b: a repeat upload of a path already on a card merges into it --------
+reply = { ok: true, path: '/u/merged.txt', size: 12, dedup: false }
+await pick('merged-a.txt')
+reply = { ok: true, path: '/u/merged.txt', size: 12, dedup: true }
+const removesBeforeMerge = removes.length
+await pick('merged-b.txt')
+tree = cards()
+ok('repeat upload merges into the existing card', byClass(tree, 'dfu-chip').length === 1, byClass(tree, 'dfu-chip').length)
+ok('the merged card keeps the original name', textOf(tree).includes('merged-a.txt') && !textOf(tree).includes('merged-b.txt'), textOf(tree))
+ok(
+  'the merge releases the duplicate reference',
+  removes.length === removesBeforeMerge + 1 && removes[removes.length - 1].path === '/u/merged.txt',
+  removes,
+)
+;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+tree = cards()
+ok('the merged card closes like any other', byClass(tree, 'dfu-chip').length === 0)
 
 // ---- 3: a host that does not report dedup keeps the old card shape ---------
 reply = { ok: true, path: '/u/legacy.txt', size: 12 }
@@ -276,7 +297,7 @@ tree = cards()
 ok('failed upload renders no trash action', byClass(tree, 'dfu-chip-delete').length === 0)
 ok('failed upload renders no hint', byClass(tree, 'dfu-chip')[0].props!.title === undefined)
 ok('failed upload keeps the remove action', byClass(tree, 'dfu-chip-remove').length === 1)
-ok('every pick reached the transport', uploads.length === 4, uploads)
+ok('every pick reached the transport', uploads.length === 6, uploads)
 
 // ---- 5: batch controls once the dock holds more than one card --------------
 reply = { ok: true, path: '/u/one.txt', size: 12, dedup: false }

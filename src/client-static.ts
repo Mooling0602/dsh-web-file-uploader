@@ -55,7 +55,8 @@ export function apply(ctx: PluginContext) {
       if (args && args.file) {
         const url = '/dsh-web-file-uploader/upload?name=' + encodeURIComponent(args.name) +
           '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(String(args.sessionId)) +
-          '&size=' + encodeURIComponent(String((args.file && args.file.size) || args.size || 0))
+          '&size=' + encodeURIComponent(String((args.file && args.file.size) || args.size || 0)) +
+          '&id=' + encodeURIComponent(args.id || '')
         const xhr = new XMLHttpRequest()
         xhr.open('POST', url)
         xhr.withCredentials = true
@@ -122,11 +123,13 @@ export function apply(ctx: PluginContext) {
       }
     }),
     remove: async (args: PathArgs) => {
-      const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(String(args.sessionId)) + '&path=' + encodeURIComponent(args.path)
+      const url = '/dsh-web-file-uploader/remove?session=' + encodeURIComponent(String(args.sessionId)) +
+        '&path=' + encodeURIComponent(args.path) + '&id=' + encodeURIComponent(args.id || '')
       await fetch(url, { method: 'POST' })
     },
     delete: async (args: PathArgs) => {
-      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(String(args.sessionId)) + '&path=' + encodeURIComponent(args.path)
+      const url = '/dsh-web-file-uploader/delete?session=' + encodeURIComponent(String(args.sessionId)) +
+        '&path=' + encodeURIComponent(args.path) + '&id=' + encodeURIComponent(args.id || '')
       await fetch(url, { method: 'POST' })
     },
     configGet: async () => {

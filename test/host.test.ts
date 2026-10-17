@@ -57,8 +57,15 @@ const S1 = 'sess-A', S2 = 'sess-B'
 
 // The static route's intake in miniature: stage, write the bytes, commit with
 // the content hash (the route hashes the body while streaming it to disk).
-const streamUpload = async (c: typeof core, sessionId: string, name: string, mime: string, content: string): Promise<UploadResult> => {
-  const begun = await c.beginStream({ sessionId, name, mime, size: Buffer.byteLength(content) })
+const streamUpload = async (
+  c: typeof core,
+  sessionId: string,
+  name: string,
+  mime: string,
+  content: string,
+  cardId?: string,
+): Promise<UploadResult> => {
+  const begun = await c.beginStream({ sessionId, id: cardId, name, mime, size: Buffer.byteLength(content) })
   if (!begun.ok || begun.tempPath === undefined || begun.id === undefined) return { ok: false, error: 'begin failed' }
   writeFileSync(begun.tempPath, content)
   return c.commitStream({ id: begun.id, sha256: createHash('sha256').update(content).digest('hex') })
@@ -292,6 +299,29 @@ const s7FolderName = foldFolderNames().find(
 const s7Folder = s7FolderName ? uploadsPath + '/' + s7FolderName : ''
 ok('the fold moved both new files', existsSync(s7Folder + '/shared.txt') && existsSync(s7Folder + '/other.txt'))
 ok('no stale root path is injected for the dedup card', !shareText.includes(uploadsPath + '/shared.txt'), shareText)
+
+// A fold moves the stored file, so the client's path goes stale; the card id is
+// what keeps × / remove working and triggers the unpack when the last card goes.
+cfg = { ttl: '7d', foldThreshold: 2 }
+const S8 = 'sess-fold-card-id'
+const idA = 'card-id-a'
+const idB = 'card-id-b'
+const ra = await streamUpload(core, S8, 'id-a.txt', 'text/plain', 'id-a-content', idA)
+const rb = await streamUpload(core, S8, 'id-b.txt', 'text/plain', 'id-b-content', idB)
+await runPreStep(S8)
+const idFolderName = foldFolderNames().find(
+  (n) => !n.endsWith('-existing') && existsSync(uploadsPath + '/' + n + '/id-a.txt'),
+)
+const idFolder = idFolderName ? uploadsPath + '/' + idFolderName : ''
+ok('the card-id case folded its files', idFolder !== '' && existsSync(idFolder + '/id-b.txt'))
+await core.remove({ sessionId: S8, path: ra.path! })
+ok('a stale path alone cannot release the folded card', existsSync(idFolder + '/id-a.txt'))
+await core.remove({ sessionId: S8, path: ra.path!, id: idA })
+const afterId = await runPreStep(S8)
+ok('the card id released one folded reference', injectText(afterId).includes('1 uploaded files in this folder'), injectText(afterId))
+await core.remove({ sessionId: S8, path: rb.path!, id: idB })
+await core.deleteMany({ sessionId: S8, paths: [] })
+ok('closing the last card unpacks after the fold', !existsSync(idFolder) && existsSync(uploadsPath + '/id-a.txt'))
 
 // A stale fold folder from a previous run is unpacked on startup.
 const orphan = uploadsPath + '/2020-01-02-03-04-05'
