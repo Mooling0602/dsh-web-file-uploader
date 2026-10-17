@@ -324,12 +324,12 @@ dsh-web-file-uploader/
 ├── test/
 │   ├── host.test.ts            # host core regression suite (streaming intake)
 │   ├── settings-panel.test.ts  # settings panel suite (stub React, no browser)
-│   ├── bundle.test.mjs         # loads the shipped client bundle via the loader contract
-│   └── release-notes.test.mjs  # CHANGELOG extraction CLI (release-notes gate)
+│   ├── bundle.test.ts          # loads the shipped client bundle via the loader contract
+│   └── release-notes.test.ts   # CHANGELOG extraction CLI (release-notes gate)
 ├── scripts/
-│   ├── build.mjs               # tsc + inline the client core + wrap the factory
-│   ├── release-notes.mjs       # extract the tag version's CHANGELOG section
-│   └── sync-profile.mjs        # hot-patch an installed profile, then verify
+│   ├── build.ts                # tsc + inline the client core + wrap the factory
+│   ├── release-notes.ts        # extract the tag version's CHANGELOG section
+│   └── sync-profile.ts         # hot-patch an installed profile, then verify
 ├── tsconfig.json               # strict; compiles src/ into lib/
 ├── cordis.patch.yml            # dsh.bundle patch (profile layer row)
 ├── package.json                # publishable manifest (dsh.bundle + dsh.client)
@@ -344,9 +344,10 @@ it compiles the host half into `lib/` and regenerates the client bundle
 (`lib/client.js` and `client/src/client.js`). Both are git-ignored: a checkout
 ships sources only, `pnpm install` runs the same build through the `prepare`
 script, and the release workflow builds the bundle before packing the tarball.
-`pnpm typecheck` and `pnpm test` gate every change; the TypeScript suites run
-the sources directly (Node strips the types) and the `.mjs` suites load the
-shipped bundle and exercise the release-notes CLI.
+`pnpm typecheck` and `pnpm test` gate every change; every suite and tool script
+is TypeScript run directly by Node (type stripping), so the bundle suite builds
+and loads the shipped client bundle and the release-notes suite exercises its
+CLI without a separate compile step.
 
 ## Development status
 
@@ -354,7 +355,7 @@ shipped bundle and exercise the release-notes CLI.
   UI, settings panel with batch delete — all covered by the test suites
 - ✅ Distribution: each bare-version tag runs CI, builds the bundle and attaches
   the installable tarball to the GitHub Release (no build needed to install)
-- ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort emulation
+- ⚠️ The client build wrapper in `scripts/build.ts` is a best-effort emulation
   of the DSH web toolchain output; verify it against the real web build before
   distributing (compare with a shipped `@deepseek-ai/dsh-client-*`
   `lib/client.js`)

@@ -217,12 +217,12 @@ dsh-web-file-uploader/
 ├── test/
 │   ├── host.test.ts            # Host 核心回归套件（流式 intake 路径）
 │   ├── settings-panel.test.ts  # 设置面板套件（桩 React，无浏览器）
-│   ├── bundle.test.mjs         # 通过 loader 契约加载已发布客户端 bundle
-│   └── release-notes.test.mjs  # CHANGELOG 抽取 CLI（发布日志门禁）
+│   ├── bundle.test.ts          # 通过 loader 契约加载已发布客户端 bundle
+│   └── release-notes.test.ts   # CHANGELOG 抽取 CLI（发布日志门禁）
 ├── scripts/
-│   ├── build.mjs               # tsc + 内联 Client 核心 + 包装工厂
-│   ├── release-notes.mjs       # 抽取 tag 对应版本的 CHANGELOG 小节
-│   └── sync-profile.mjs        # 热补丁已安装 profile 并校验
+│   ├── build.ts                # tsc + 内联 Client 核心 + 包装工厂
+│   ├── release-notes.ts        # 抽取 tag 对应版本的 CHANGELOG 小节
+│   └── sync-profile.ts         # 热补丁已安装 profile 并校验
 ├── tsconfig.json               # strict；将 src/ 编译进 lib/
 ├── cordis.patch.yml            # dsh.bundle 补丁（profile 层行）
 ├── package.json                # 可发布清单（dsh.bundle + dsh.client）
@@ -232,13 +232,13 @@ dsh-web-file-uploader/
 └── LICENSE                     # MIT
 ```
 
-**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。两者都被 git 忽略：仓库只有源码，`pnpm install` 会通过 `prepare` 脚本执行同样的构建，发布工作流也会在打包 tarball 前先构建。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；TypeScript 套件直接运行源码（Node 负责剥离类型），`.mjs` 套件则加载已发布 bundle 与发布日志抽取 CLI。
+**如何修改代码**：编辑 `src/core/*`（或缝隙层），然后运行 `pnpm build`——它把 Host 半编译进 `lib/`，并重新生成客户端包（`lib/client.js` 与 `client/src/client.js`）。两者都被 git 忽略：仓库只有源码，`pnpm install` 会通过 `prepare` 脚本执行同样的构建，发布工作流也会在打包 tarball 前先构建。每次改动都应通过 `pnpm typecheck` 与 `pnpm test`；所有套件与工具脚本都是 TypeScript，由 Node 直接运行（类型剥离），因此 bundle 套件会现场构建并加载已发布 bundle，发布日志套件也会直接跑其 CLI，无需额外编译步骤。
 
 ## 开发状态
 
 - ✅ 静态 bundle：卡片驱动注入、模型感知适配、防重传、i18n UI、带批量删除的设置面板——全部由测试覆盖
 - ✅ 分发：每个裸版本号标签都会跑 CI、构建 bundle，并把可安装 tarball 附加到 GitHub Release（安装端无需构建）
-- ⚠️ `scripts/build.mjs` 中的客户端包装器是对 DSH web 工具链产物的尽力模拟；正式分发前需对照真实 web 构建验证（与官方 `@deepseek-ai/dsh-client-*` 的 `lib/client.js` 对比）
+- ⚠️ `scripts/build.ts` 中的客户端包装器是对 DSH web 工具链产物的尽力模拟；正式分发前需对照真实 web 构建验证（与官方 `@deepseek-ai/dsh-client-*` 的 `lib/client.js` 对比）
 
 ## 许可证
 

@@ -49,7 +49,7 @@ instead. After installing, **restart the dsh web process** and refresh the page.
   scripts by default — allow the exact key pnpm prints in
   `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run (the plugin
   manager UI asks for the same approval).
-- ⚠️ The client build wrapper in `scripts/build.mjs` is a best-effort
+- ⚠️ The client build wrapper in `scripts/build.ts` is a best-effort
   emulation of the DSH web toolchain output. **Verify it against the real web
   build before distributing** (compare with a shipped
   `@deepseek-ai/dsh-client-*` `lib/client.js`).
@@ -163,7 +163,7 @@ picks up the `v` prefix. The workflow then:
 Preview the notes locally before tagging:
 
 ```bash
-node scripts/release-notes.mjs 1.0.0-alpha.3
+node scripts/release-notes.ts 1.0.0-alpha.3
 ```
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its

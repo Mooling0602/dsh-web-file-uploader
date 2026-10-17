@@ -54,16 +54,16 @@ Everything a **human user sees in the UI** is localized through the app's
 - **Seams**: `src/client-static.ts` (client) and `src/index.ts` (host) wire
   transport / IO / services into the cores. The plugin ships as a static
   bundle only — there is no dynamic (session) mode.
-- **Toolchain**: TypeScript (`strict`) compiled by `tsc`; `pnpm typecheck`
-  checks sources and tests, `pnpm test` runs the suites — `host.test.ts` and
-  `settings-panel.test.ts` run the TypeScript sources directly (Node ≥ 22.6
-  strips the types), `bundle.test.mjs` rebuilds and then loads the shipped
-  `lib/client.js` through the web loader contract, and
-  `release-notes.test.mjs` covers the `CHANGELOG.md` extraction CLI the release
-  workflow uses. `pnpm build` (scripts/build.mjs) compiles the host half into
-  `lib/` and inlines the client core into the web loader factory
-  (`lib/client.js`, plus the unwrapped `client/src/client.js` the dsh.client
-  scan reads).
+- **Toolchain**: TypeScript (`strict`) compiled by `tsc`; every tool script and
+  suite is TypeScript run directly through Node's type stripping (Node ≥ 22.19,
+  dsh's own engine floor). `pnpm typecheck` checks sources, suites and scripts;
+  `pnpm test` runs `host.test.ts` and `settings-panel.test.ts` against the
+  sources, `bundle.test.ts` rebuilds and then loads the shipped `lib/client.js`
+  through the web loader contract, and `release-notes.test.ts` covers the
+  `CHANGELOG.md` extraction CLI the release workflow uses. `pnpm build`
+  (scripts/build.ts) compiles the host half into `lib/` and inlines the client
+  core into the web loader factory (`lib/client.js`, plus the unwrapped
+  `client/src/client.js` the dsh.client scan reads).
 - **dsh API types** are a hand-maintained subset in `src/types.ts` — dsh ships
   none and its interfaces carry breaking changes.
 - **Distribution**: the repository commits no build output. `lib/` and
@@ -72,7 +72,7 @@ Everything a **human user sees in the UI** is localized through the app's
   packing, and the installable artifact is the `npm pack` tarball attached to
   the GitHub Release. Rebuild before hot-patching a profile or adding a local
   directory, and never commit the generated files.
-- **Installed profile hot-patch**: run `node scripts/sync-profile.mjs` rather
+- **Installed profile hot-patch**: run `node scripts/sync-profile.ts` rather
   than copying `lib/` by hand. `lib/` is self-contained (the host half imports
   only `./core/*`), so a full copy of it is enough.
 
@@ -93,7 +93,7 @@ writes it. Agents must not invent release entries:
   code formatting**. GitHub autolinks bare short hashes in the rendered
   release body; code formatting suppresses the link.
 - Preview what the workflow will publish with
-  `node scripts/release-notes.mjs <version>`. The release workflow rejects a
+  `node scripts/release-notes.ts <version>`. The release workflow rejects a
   missing, empty, or duplicated `## <version>` section and any remaining
   `hash123` placeholder.
 - Keep the section format the maintainer uses: an exact `## <version>`
