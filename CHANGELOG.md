@@ -112,3 +112,55 @@ No functional changes to the plugin's runtime behavior.
   commits 2fd89f8 and b8d3054.
 - Allow agents to write changelog entries when the maintainer explicitly
   authorizes it in commit 1a34695.
+
+## 1.0.0-alpha.5
+
+### Features
+
+- Fold large upload groups at send time: a card group that reaches the fold
+  threshold is injected as one timestamped folder (the new uploads move into
+  it) or one `paths.txt` (the existing deduplicated uploads are not moved),
+  and the files return to the uploads root once the session's cards are
+  cleared or on the next startup sweep; add the fold-threshold setting
+  (2..100, default 100) in commit 341bb3c.
+- Add a "max files per upload" setting (default 100, 0 = unlimited): a picker
+  selection over the limit is refused whole with a notice — nothing is
+  uploaded or discarded — and the host config persists the limit in commit
+  cdc84e3.
+- Add batch actions to the upload dock: "copy all paths", a two-step "remove
+  all" that drops the cards but keeps the files, and a two-step "delete all"
+  that deletes the files and un-references shared deduplicated copies, in
+  commits 4c7ff54 and 001afe2.
+
+### Fixes
+
+- Give the settings page the shell's content inset, so its copy starts and
+  ends where the shell's own settings pages do, in commit e1357f0.
+- Cap the upload dock's card list at two rows and scroll it vertically
+  instead of letting the dock push the conversation off screen in commit
+  23d5227.
+- Inject every card reference: drop the 100-entry pending cap, so a card in
+  the composer can no longer silently disappear from the injected context in
+  commit 2f8a269.
+- Keep shared card references in sync with folds: the injected text no longer
+  lists uploads-root paths that have moved, and a folded group counts
+  distinct files instead of card entries, in commit a0d4201.
+- Merge a repeat upload into the existing card for the same stored path
+  instead of showing a duplicate card, and release a card by its stable id so
+  clearing the cards after a fold removes the injection in commit 5a11053.
+
+### CI/CD
+
+- Publish the npm package through OIDC trusted publishing instead of an
+  optional token secret, keeping the pre-release dist-tag policy and letting
+  npm sign the provenance attestation, in commit d235d76.
+- Gate the npm publish step behind the `NPM_PUBLISH_ENABLED` repository
+  variable, so GitHub Releases keep shipping while the one-time trusted
+  publisher setup is pending, in commit 1b0f8ae.
+
+### Docs
+
+- Document the npm channel bootstrap, the repository-variable switch and the
+  tarball install path used until the first publish in commit b4f1787.
+- Describe the fold-threshold and max-files settings and the extended config
+  keys in the READMEs in commits 341bb3c and cdc84e3.
