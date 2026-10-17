@@ -1,0 +1,275 @@
+# .github/workflows/release.yml — publish a release from a version tag.
+#
+# Push a tag named `v<package.json version>` (for example v1.0.0-alpha.2) and
+# this workflow runs the full gate, packs the npm tarball, creates a GitHub
+# Release (flagged as a pre-release for any semver prerelease: alpha, beta,
+# rc, ...) and publishes to npm when the NODE_AUTH_TOKEN secret is configured.
+#
+# See PUBLISHING.md for the release checklist, the npm dist-tag policy and the
+# optional npm credentials.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to release (for example v1.0.0-alpha.2)"
+        required: true
+        type: string
+      dry_run:
+        description: "Run the checks and build the tarball without creating a release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # create the GitHub Release and upload the tarball
+  id-token: write # npm provenance attestations (only used when publishing)
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  PNPM_VERSION: "12"
+
+jobs:
+  release:
+    name: Release ${{ inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate the tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          version="${tag#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+
+          if [ "${version}" != "${pkg_version}" ]; then
+            echo "::error::tag ${tag} does not match the package.json version ${pkg_version}"
+            exit 1
+          fi
+
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::${version} is not a valid semantic version"
+            exit 1
+          fi
+
+          # Only release commits that already landed on main: a tag on an
+          # unmerged branch would ship unreviewed code.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::${tag} is not reachable from main"
+            exit 1
+          fi
+
+          # A semver prerelease (alpha/beta/rc/...) becomes a GitHub
+          # pre-release and an npm prerelease dist-tag, so `latest` keeps
+          # resolving to the last stable version.
+          if [[ "${version}" == *-* ]]; then
+            prerelease=true
+            case "${version#*-}" in
+              alpha.*|alpha) channel=alpha ;;
+              beta.*|beta) channel=beta ;;
+              rc.*|rc) channel=rc ;;
+              *) channel=pre ;;
+            esac
+            npm_dist_tag=next
+          else
+            prerelease=false
+            channel=stable
+            npm_dist_tag=latest
+          fi
+
+          {
+            echo "version=${version}"
+            echo "prerelease=${prerelease}"
+            echo "channel=${channel}"
+            echo "npm_dist_tag=${npm_dist_tag}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "tag ${tag}: version ${version}, channel ${channel}, prerelease=${prerelease}"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify the committed bundle is reproducible
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the build changed tracked files; commit the rebuilt bundle before tagging"
+            git status --short
+            git diff --stat
+            exit 1
+          fi
+
+      - name: Pack the release tarball
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f ./*.tgz
+          npm pack --silent > /dev/null
+          tarball="$(ls -1 ./*.tgz | head -n 1)"
+          echo "tarball=${tarball}" >> "${GITHUB_OUTPUT}"
+          tar -tzf "${tarball}" | sort > pack-contents.txt
+          cat pack-contents.txt
+          for required in \
+            package/package.json \
+            package/lib/index.js \
+            package/lib/client.js \
+            package/lib/core/host.js \
+            package/lib/types.js \
+            package/client/src/client.js \
+            package/cordis.patch.yml \
+            package/README.md \
+            package/LICENSE; do
+            if ! grep -qx "${required}" pack-contents.txt; then
+              echo "::error::tarball ${tarball} is missing ${required}"
+              exit 1
+            fi
+          done
+
+      - name: Upload the tarball as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-web-file-uploader-${{ steps.version.outputs.version }}
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+
+      - name: Create the GitHub release
+        id: gh_release
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          tarball="${{ steps.pack.outputs.tarball }}"
+          prerelease="${{ steps.version.outputs.prerelease }}"
+
+          if gh release view "${tag}" > /dev/null 2>&1; then
+            echo "release ${tag} already exists; refreshing its tarball"
+            gh release upload "${tag}" "${tarball}" --clobber
+            if [ "${prerelease}" = "true" ]; then
+              gh release edit "${tag}" --prerelease
+            else
+              gh release edit "${tag}" --latest
+            fi
+            echo "release_status=updated" >> "${GITHUB_OUTPUT}"
+          elif [ "${prerelease}" = "true" ]; then
+            gh release create "${tag}" "${tarball}" \
+              --verify-tag \
+              --title "${tag}" \
+              --generate-notes \
+              --prerelease
+            echo "release_status=created (pre-release)" >> "${GITHUB_OUTPUT}"
+          else
+            gh release create "${tag}" "${tarball}" \
+              --verify-tag \
+              --title "${tag}" \
+              --generate-notes \
+              --latest
+            echo "release_status=created" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish the npm release
+        id: npm_publish
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          dist_tag="${{ steps.version.outputs.npm_dist_tag }}"
+
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice::NODE_AUTH_TOKEN is not configured; skipping the npm publish (the GitHub Release still ships)."
+            echo "npm_status=skipped (no NODE_AUTH_TOKEN)" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if npm view "dsh-web-file-uploader@${version}" version > /dev/null 2>&1; then
+            echo "::notice::dsh-web-file-uploader@${version} is already published; skipping."
+            echo "npm_status=already published" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          publish_args=(--access public)
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            # A prerelease never moves `latest`: it goes to the `next` tag.
+            publish_args+=(--tag "${dist_tag}")
+          fi
+
+          # Provenance ties the tarball to this workflow run, but npm rejects it
+          # when package.json#repository does not match the publishing repo.
+          release_repo_url="git+https://github.com/${GITHUB_REPOSITORY}.git"
+          if RELEASE_REPO_URL="${release_repo_url}" node -e \
+            "const p = require('./package.json'); process.exit(p.repository && p.repository.url === process.env.RELEASE_REPO_URL ? 0 : 1)"; then
+            publish_args+=(--provenance)
+          else
+            echo "::notice::package.json repository does not match ${GITHUB_REPOSITORY}; publishing without provenance."
+          fi
+
+          npm publish "${publish_args[@]}"
+          echo "npm_status=published (--tag ${dist_tag})" >> "${GITHUB_OUTPUT}"
+
+      - name: Summarize
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        run: |
+          {
+            echo "### Release ${TAG}"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| version | \`${{ steps.version.outputs.version }}\` |"
+            echo "| channel | \`${{ steps.version.outputs.channel }}\` |"
+            echo "| pre-release | \`${{ steps.version.outputs.prerelease }}\` |"
+            echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
+            echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"
+            echo "| npm dist-tag | \`${{ steps.version.outputs.npm_dist_tag }}\` |"
+            echo "| tarball | \`${{ steps.pack.outputs.tarball }}\` |"
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo ""
+              echo "> Dry run: no GitHub Release was created and nothing was published."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
