@@ -1,8 +1,8 @@
 # .github/workflows/release.yml — publish a release from a version tag.
 #
-# Push a version tag — `<package.json version>`, optionally v-prefixed, for
-# example 1.0.0-alpha.2 or v1.0.0-alpha.2 — and this workflow runs the full
-# gate, packs the npm tarball, creates a GitHub Release whose body is the
+# Push a bare version tag — `<package.json version>` without a `v` prefix, for
+# example 1.0.0-alpha.3 — and this workflow runs the full gate, packs the npm
+# tarball, creates a GitHub Release titled `v<version>` whose body is the
 # `## <version>` section of CHANGELOG.md (flagged as a pre-release for any
 # semver prerelease: alpha, beta, rc, ...) and publishes to npm when the
 # NODE_AUTH_TOKEN secret is configured.
@@ -14,13 +14,13 @@ name: release
 on:
   push:
     tags:
-      # `v1.0.0-alpha.2` and the historical bare `1.0.0-alpha.2` both trigger.
-      - "v*"
+      # Bare versions only: `1.0.0-alpha.3`. The v prefix belongs to the
+      # release commit subject and the GitHub Release title, not the tag.
       - "[0-9]*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing version tag to release (for example v1.0.0-alpha.2)"
+        description: "Existing bare version tag to release (for example 1.0.0-alpha.3)"
         required: true
         type: string
       dry_run:
@@ -73,8 +73,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="${TAG}"
-          version="${tag#v}"
+          version="${tag}"
           pkg_version="$(node -p "require('./package.json').version")"
+
+          if [[ "${tag}" == v* ]]; then
+            echo "::error::release tags are bare versions (for example 1.0.0-alpha.3); the v prefix belongs to the release commit subject and the GitHub Release title"
+            exit 1
+          fi
 
           if [ "${version}" != "${pkg_version}" ]; then
             echo "::error::tag ${tag} does not match the package.json version ${pkg_version}"
@@ -198,6 +203,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${TAG}"
+          version="${{ steps.version.outputs.version }}"
+          release_title="v${version}"
           tarball="${{ steps.pack.outputs.tarball }}"
           notes_file="${{ steps.notes.outputs.notes_file }}"
           prerelease="${{ steps.version.outputs.prerelease }}"
@@ -206,22 +213,22 @@ jobs:
             echo "release ${tag} already exists; refreshing its tarball and notes"
             gh release upload "${tag}" "${tarball}" --clobber
             if [ "${prerelease}" = "true" ]; then
-              gh release edit "${tag}" --notes-file "${notes_file}" --prerelease
+              gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --prerelease
             else
-              gh release edit "${tag}" --notes-file "${notes_file}" --latest
+              gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --latest
             fi
             echo "release_status=updated" >> "${GITHUB_OUTPUT}"
           elif [ "${prerelease}" = "true" ]; then
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
-              --title "${tag}" \
+              --title "${release_title}" \
               --notes-file "${notes_file}" \
               --prerelease
             echo "release_status=created (pre-release)" >> "${GITHUB_OUTPUT}"
           else
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
-              --title "${tag}" \
+              --title "${release_title}" \
               --notes-file "${notes_file}" \
               --latest
             echo "release_status=created" >> "${GITHUB_OUTPUT}"
@@ -282,6 +289,7 @@ jobs:
             echo "| channel | \`${{ steps.version.outputs.channel }}\` |"
             echo "| pre-release | \`${{ steps.version.outputs.prerelease }}\` |"
             echo "| release notes | \`CHANGELOG.md\` § ${{ steps.version.outputs.version }} |"
+            echo "| release title | \`v${{ steps.version.outputs.version }}\` |"
             echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
             echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"
             echo "| npm dist-tag | \`${{ steps.version.outputs.npm_dist_tag }}\` |"
