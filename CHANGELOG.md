@@ -66,12 +66,35 @@ only generates new version's release note.
   release keeps its assets and only its editable title and notes are
   refreshed; a missing expected asset fails with a clear "bump the version"
   message, in commit b53906b.
+- Lint `CHANGELOG.md` with markdownlint before its content can reach a
+  release body: a `docs:` push that edits it is lint-checked in CI even on the
+  fast path, the release workflow lints it again before composing the notes,
+  and a failing lint still ships the build and the GitHub Release but with an
+  empty body and a failed run, in commit c747fa2.
+- Add the `.markdownlint.json` config the changelog lint runs with, allowing
+  repeated category headings across version sections, in commit 3a51717.
+- Add a manual **release-notes** workflow that lints the changelog and
+  regenerates only the body of an existing release from `main`'s
+  `CHANGELOG.md`, for any published tag, with `ref` and `dry_run` inputs;
+  assets are never touched, so it repairs immutable releases too, in commit
+  c747fa2.
+- Resolve a single-commit push's changed files through the commit-files API
+  in the CI gate: the Actions push payload carries no file lists, so a docs
+  push editing `CHANGELOG.md` skipped the changelog lint and a docs push that
+  changed `package.json` would have skipped the full gate; an unreadable file
+  list now runs the checks instead of skipping them, in commit e33d8ba.
 
 ### Docs
 
 - Record the Desktop-only local-reference decision: the web UI always uploads,
   permission mode is not consulted, and the host never copies or deletes the
   original file, in commit 27f03b0.
+- Document the changelog lint, the empty-body behavior on a failed lint and
+  the release-notes repair workflow in `AGENTS.md` and `PUBLISHING.md`, in
+  commit c747fa2.
+- Turn the release-note Header into a bilingual GitHub note that tells
+  readers to copy the attached package link into dsh's "Add plugin" input
+  field, in commits e8478e0 and b2e82d9.
 
 ## 1.0.0-alpha.5
 
