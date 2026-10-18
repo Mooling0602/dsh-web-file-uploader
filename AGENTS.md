@@ -125,9 +125,11 @@ adaptation:
   therefore readable under `workspace-write`, `read-only` and `custom` too, and
   copying the file into `~/.dsh/uploads` would grant no extra access — that
   directory is not writable under `workspace-write` either. The composer never
-  reads the `permissions` projection: the only gate is whether the shell can
-  report a real host path. This supersedes the first permission-gated version,
-  where `workspace-write` / `read-only` / `custom` uploaded instead.
+  reads the `permissions` projection: local referencing happens when the shell
+  can report a real host path and the default-on `skipLocalUpload` setting
+  (Settings → File uploads) is not turned off. This supersedes the first
+  permission-gated version, where `workspace-write` / `read-only` / `custom`
+  uploaded instead.
 - **No copying, no ownership.** The host route (`POST /local`, loopback callers
   only) stats the file and registers a pending reference; nothing enters
   `uploads/`, the dedup index, or TTL/GC. References fold and inject like the

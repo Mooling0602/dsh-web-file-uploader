@@ -137,6 +137,8 @@ export interface DfuConfig {
   maxFiles?: number
   /** Send-time fold threshold (2..100): a group at or above it folds. */
   foldThreshold?: number
+  /** Reference local files instead of uploading them (default on; Desktop). */
+  skipLocalUpload?: boolean
 }
 
 /** One row of the settings "manage files" inventory (mirrors the host core). */
@@ -266,6 +268,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       replaceRestore: '关闭开关并保存即可恢复官方入口；停用或卸载插件时也会自动恢复。',
       alwaysShowButton: '始终显示单独的附件上传按钮',
       alwaysShowHint: '开启时输入框旁始终显示本插件按钮。关闭后，若同时开启「替代官方添加文件入口」，输入框旁不再显示按钮，上传入口只保留在菜单里；未开启替代时按钮仍会显示，避免无处上传。',
+      skipLocalUpload: '本地文件跳过上传',
+      skipLocalUploadHint: '默认开启，仅桌面版（DSH Desktop）支持：桌面版能提供宿主路径的文件直接本地引用、零上传。浏览器版始终上传，不受此开关影响；关闭后即使可本地引用也按普通文件上传。',
       menuFileLabel: '文件',
       cancelling: '正在取消…',
       cancelTitle: '取消上传？',
@@ -339,6 +343,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       replaceRestore: 'Turning the switch off and saving brings the official entry back; disabling or removing the plugin restores it too.',
       alwaysShowButton: 'Always show the standalone attach button',
       alwaysShowHint: 'On shows this plugin’s button beside the input box at all times. Off hides it whenever “Replace the official add-file entry” is on, leaving the menu as the only upload entry; with replacement off the button still shows so an entry always exists.',
+      skipLocalUpload: 'Skip upload for local files',
+      skipLocalUploadHint: 'On by default and Desktop only: the DSH Desktop shell reports real host paths, so those files are referenced in place with no upload. The browser web UI always uploads and ignores this switch; off uploads every file, even when a host path is available.',
       menuFileLabel: 'File',
       cancelling: 'Cancelling…',
       cancelTitle: 'Cancel this upload?',
@@ -653,12 +659,16 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       if (picked.length === 0) return
       const files = picked
       let maxFiles = 100
+      // The "skip upload for local files" switch (default on) decides whether a
+      // picked file with a real host path is referenced in place or uploaded.
+      let skipLocalUpload = true
       try {
         const cfg = typeof configGet === 'function' ? await configGet() : null
         const raw = cfg && typeof cfg.maxFiles === 'number' ? cfg.maxFiles : maxFiles
         if (Number.isFinite(raw)) maxFiles = Math.max(0, Math.min(10000, Math.floor(raw)))
+        skipLocalUpload = !(cfg && cfg.skipLocalUpload === false)
       } catch {
-        // keep the default limit
+        // keep the defaults
       }
       if (maxFiles > 0 && files.length > maxFiles) {
         store.setNotice(sessionId, tf('tooManyFilesBody', { n: maxFiles }))
@@ -671,6 +681,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       // unrestricted in every mode, so a local reference stays readable under
       // workspace-write / read-only / custom too. A served web page has no host
       // paths (and pasted bytes have none either), so those files still upload.
+      // The default-on skipLocalUpload setting is the only switch: off uploads
+      // every file, even when a host path is available.
       files.forEach((file: File) => {
         const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
         const isImage = IMAGE_TYPES.includes(file.type)
@@ -765,7 +777,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             })
         }
         let originalPath: string | null = null
-        if (typeof hostPathFor === 'function') {
+        if (skipLocalUpload && typeof hostPathFor === 'function') {
           try {
             const p = hostPathFor(file)
             if (typeof p === 'string' && p !== '') originalPath = p
@@ -1496,6 +1508,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const [ttl, setTtl] = react.useState('')
     const [replaceOn, setReplaceOn] = react.useState(false)
     const [alwaysShowOn, setAlwaysShowOn] = react.useState(true)
+    const [skipLocalOn, setSkipLocalOn] = react.useState(true)
     const [maxFiles, setMaxFiles] = react.useState('100')
     const [foldThreshold, setFoldThreshold] = react.useState('100')
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
@@ -1508,6 +1521,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
             if (r.ttl != null) setTtl(String(r.ttl))
             setReplaceOn(r.replaceOfficial === true)
             setAlwaysShowOn(r.alwaysShowButton !== false)
+            setSkipLocalOn(r.skipLocalUpload !== false)
             if (r.maxFiles != null) setMaxFiles(String(r.maxFiles))
             if (r.foldThreshold != null) setFoldThreshold(String(r.foldThreshold))
           })
@@ -1547,6 +1561,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         ttl: ttl.trim(),
         replaceOfficial: replaceOn,
         alwaysShowButton: alwaysShowOn,
+        skipLocalUpload: skipLocalOn,
         maxFiles: clampMaxFiles(maxFiles),
         foldThreshold: clampFoldThreshold(foldThreshold),
       })
@@ -1563,8 +1578,10 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           // back on screen.
           const nextReplace = r && typeof r.replaceOfficial === 'boolean' ? r.replaceOfficial : replaceOn
           const nextAlwaysShow = r && typeof r.alwaysShowButton === 'boolean' ? r.alwaysShowButton : alwaysShowOn
+          const nextSkipLocal = r && typeof r.skipLocalUpload === 'boolean' ? r.skipLocalUpload : skipLocalOn
           setReplaceOn(nextReplace)
           setAlwaysShowOn(nextAlwaysShow)
+          setSkipLocalOn(nextSkipLocal)
           // Settings can be open with the composer unmounted, so the saved values
           // are applied to whatever is on screen now and to the next mount.
           applyUploadEntrySettings(nextReplace, nextAlwaysShow)
@@ -1615,6 +1632,24 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         ),
       ),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('alwaysShowHint')),
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-toggle' },
+        react.createElement('span', { className: 'dfu-settings-toggle-label' }, tFn('skipLocalUpload')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': skipLocalOn,
+            'aria-label': tFn('skipLocalUpload'),
+            className: 'dfu-switch',
+            onClick: () => setSkipLocalOn(!skipLocalOn),
+          },
+          react.createElement('span', { className: 'dfu-switch-thumb' }),
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('skipLocalUploadHint')),
       react.createElement(
         'div',
         { className: 'dfu-settings-row dfu-settings-stepper' },

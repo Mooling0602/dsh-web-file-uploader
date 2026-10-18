@@ -126,6 +126,9 @@ const removes: Array<{ sessionId?: string; path: string; id?: string }> = []
 const deletes: Array<{ sessionId?: string; path: string; id?: string }> = []
 let reply: UploadReply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
 let maxFilesSetting = 100
+// The settings switch "skip upload for local files" (default on). Off forces
+// the upload channel even when the shell reports a real host path.
+let skipLocalUploadSetting = true
 
 // Local references: the composer asks the shell for each picked file's real
 // host path. When one is available the card references it instead of uploading,
@@ -151,7 +154,7 @@ const core = createClientCore({
     return { ok: true, results: [{ ok: true, name: card.name, path: card.path, size: card.size, local: true }] }
   },
   hostPathFor: (file: File) => hostPaths.get((file as unknown as { name: string }).name) ?? null,
-  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting }),
+  configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting, skipLocalUpload: skipLocalUploadSetting }),
   insertStyles: () => {},
 })
 const ctx = {
@@ -491,6 +494,23 @@ await settle()
 await settle()
 tree = cards()
 ok('the mixed cards close', tree === null, tree)
+
+// ---- 9b: the setting can force uploads even with a host path --------------
+// "Skip upload for local files" is on by default; off must keep the upload
+// channel for files that would otherwise be referenced in place.
+skipLocalUploadSetting = false
+hostPaths.set('forced-upload.txt', '/home/user/originals/forced-upload.txt')
+reply = { ok: true, path: '/u/forced-upload.txt', size: 12, dedup: false }
+const uploadsBeforeForced = uploads.length
+const localsBeforeForced = localCalls.length
+await pick('forced-upload.txt')
+await settle()
+tree = cards()
+ok('skip-upload off forces the upload channel', uploads.length === uploadsBeforeForced + 1 && localCalls.length === localsBeforeForced, { uploads, localCalls })
+ok('the forced-upload card is not marked local', !textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+ok('the forced-upload card keeps the trash action', byClass(tree, 'dfu-chip-delete').length === 1)
+await closeCard()
+skipLocalUploadSetting = true
 
 // ---- 10: a refused local reference falls back to uploading the bytes -------
 hostPaths.set('fallback.txt', '/home/user/originals/fallback.txt')

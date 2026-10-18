@@ -172,10 +172,11 @@ race in-flight writes; no background task is required.
   tab carries its own paperclip mark - the composer button's own diagonal
   glyph, at the same scale - so it never reads as the gear rows other plugins
   get): the retention field, the max-files and fold-threshold steppers, and the
-  two upload-entry switches (*Replace the official add-file entry*, *Always
-  show the standalone attach button*) share one Save button. The bundle persists
-  all of them in `~/.dsh/dsh-web-file-uploader.json` (`{ ttl,
-  replaceOfficial, alwaysShowButton, maxFiles, foldThreshold }`) and merges
+  three switches (*Replace the official add-file entry*, *Always show the
+  standalone attach button*, *Skip upload for local files* — Desktop-only)
+  share one Save button. The bundle persists all of them in
+  `~/.dsh/dsh-web-file-uploader.json` (`{ ttl, replaceOfficial,
+  alwaysShowButton, maxFiles, foldThreshold, skipLocalUpload }`) and merges
   updates field by field, so saving one never clears another. The environment
   variable `DSH_UPLOAD_TTL` (e.g. `DSH_UPLOAD_TTL=30m`) is honored as a fallback
   before the default.
@@ -187,10 +188,12 @@ protecting pre-existing uploads from being deleted on migration.
 
 The DSH Desktop shell can report each picked file's real absolute path, so the
 plugin registers that path instead of uploading bytes: the card is marked
-**Local** and the file is referenced in place. Permission mode is deliberately
-not consulted — the DSH sandbox confines file **writes** only, so reads stay
-available in every mode. The reference is handled exactly like the existing
-(dedup) file group:
+**Local** and the file is referenced in place. This is a Desktop-only feature
+controlled by the default-on **Skip upload for local files** switch
+(Settings → File uploads); turn it off to upload every file even when a host
+path is available. Permission mode is deliberately not consulted — the DSH
+sandbox confines file **writes** only, so reads stay available in every mode.
+The reference is handled exactly like the existing (dedup) file group:
 
 - Nothing is copied into `~/.dsh/uploads/`; no dedup index entry is written and
   TTL/GC never touches the file — the host does not own it.

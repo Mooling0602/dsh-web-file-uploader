@@ -122,6 +122,7 @@ let configResult: Record<string, unknown> = {
   alwaysShowButton: true,
   maxFiles: 100,
   foldThreshold: 100,
+  skipLocalUpload: true,
 }
 
 const core = createClientCore({
@@ -137,6 +138,7 @@ const core = createClientCore({
       ttl: String(cfg.ttl ?? ''),
       replaceOfficial: cfg.replaceOfficial === true,
       alwaysShowButton: cfg.alwaysShowButton !== false,
+      skipLocalUpload: cfg.skipLocalUpload !== false,
       maxFiles: cfg.maxFiles,
       foldThreshold: cfg.foldThreshold,
     }
@@ -279,10 +281,14 @@ ok('row becomes selectable again', byClass(tree, 'dfu-manage-row-locked').length
 // ---- upload-entry switches ----
 tree = await mount()
 const switches = () => byClass(tree, 'dfu-switch')
-ok('two upload-entry switches render', switches().length === 2, switches().length)
+ok('three settings switches render', switches().length === 3, switches().length)
 ok('replace switch is labelled for the add-file entry',
   byClass(tree, 'dfu-settings-toggle-label').some(n => textOf(n) === dicts.zh.replaceOfficial),
   byClass(tree, 'dfu-settings-toggle-label').map(textOf))
+const skipLocalSwitch = switches().find(s => s.props!['aria-label'] === dicts.zh.skipLocalUpload)
+ok('skip-upload switch exists', skipLocalSwitch !== undefined)
+ok('skip-upload switch defaults on', skipLocalSwitch?.props!['aria-checked'] === true, skipLocalSwitch?.props!['aria-checked'])
+ok('skip-upload hint says Desktop only', dicts.zh.skipLocalUploadHint.includes('桌面版') && dicts.en.skipLocalUploadHint.includes('Desktop'), dicts.zh.skipLocalUploadHint)
 const alwaysSwitch = switches().find(s => s.props!['aria-label'] === dicts.zh.alwaysShowButton)
 ok('always-show switch exists', alwaysSwitch !== undefined)
 ok('always-show switch defaults on', alwaysSwitch?.props!['aria-checked'] === true, alwaysSwitch?.props!['aria-checked'])
@@ -296,6 +302,17 @@ ok('save button exists', saveBtn !== undefined)
 await new Promise((r) => setTimeout(r, 0))
 ok('save sends the always-show setting', (savedConfig as Record<string, unknown> | null)?.alwaysShowButton === false, savedConfig)
 ok('save keeps the replacement setting', (savedConfig as Record<string, unknown> | null)?.replaceOfficial === false, savedConfig)
+ok('save keeps the skip-upload setting on', (savedConfig as Record<string, unknown> | null)?.skipLocalUpload === true, savedConfig)
+
+// Turning "skip upload for local files" off must reach the host.
+;(switches().find(s => s.props!['aria-label'] === dicts.zh.skipLocalUpload)!.props!.onClick as () => void)()
+tree = draw()
+const skipOff = switches().find(s => s.props!['aria-label'] === dicts.zh.skipLocalUpload)
+ok('skip-upload switch toggles off', skipOff?.props!['aria-checked'] === false, skipOff?.props!['aria-checked'])
+const saveSkip = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveSkip!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('save sends the skip-upload setting off', (savedConfig as Record<string, unknown> | null)?.skipLocalUpload === false, savedConfig)
 
 // ---- max-files stepper ----
 configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 7, foldThreshold: 30 }
