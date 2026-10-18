@@ -103,6 +103,32 @@ workflow or the release-note script is `ci`, not `feat`.
   than copying `lib/` by hand. `lib/` is self-contained (the host half imports
   only `./core/*`), so a full copy of it is enough.
 
+## Local references (Desktop only)
+
+The composer may reference a picked file by its original absolute path instead
+of uploading it. This is a deliberate platform decision, not a missing
+adaptation:
+
+- **Desktop only.** The Desktop shell hosts its own local dsh core and exposes
+  `__DSH_HOST_PATHS__.pathFor`, so the client knows the real host path and the
+  host can `stat`/read the same file. That path is stable and needs no extra
+  transport, which keeps the feature robust.
+- **No web support, by decision.** A served web page cannot see absolute file
+  paths (browser File API limitation); a host-side file picker or manual path
+  entry would add a lot of surface for little benefit. The web frontend always
+  uploads. Do not add a web fallback without re-opening this decision with the
+  maintainer.
+- **Permission gate.** The client reads the session `permissions` projection at
+  pick time; only `danger-full-access` and `auto` (which also runs without a
+  sandbox) register local references. Every other value — `workspace-write`,
+  `read-only`, `custom`, or a missing projection — keeps uploading. Cards
+  already in the dock are never converted.
+- **No copying, no ownership.** The host route (`POST /local`, loopback callers
+  only) stats the file and registers a pending reference; nothing enters
+  `uploads/`, the dedup index, or TTL/GC. References fold and inject like the
+  existing-file group, and the host never deletes the original — the card only
+  un-references it.
+
 ## Changelog ownership
 
 `CHANGELOG.md` is the source of the GitHub Release body, and the maintainer
