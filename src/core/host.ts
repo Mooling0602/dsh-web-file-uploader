@@ -950,7 +950,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         if (!state.existingFolder) return false
       }
       if (typeof deps.ensureDir === 'function') await deps.ensureDir(state.existingFolder)
-      await deps.writeTextFile(state.existingFolder + '/paths.txt', entries.map((e) => e.abs).join('\n'))
+      await deps.writeTextFile(state.existingFolder + '/paths.txt', entries.map((e) => e.abs).join('\n') + '\n')
       probe('FOLD-EXISTING sid=' + sid + ' folder=' + state.existingFolder + ' n=' + entries.length)
       return true
     } catch (err) {
