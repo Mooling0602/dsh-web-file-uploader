@@ -118,11 +118,16 @@ adaptation:
   entry would add a lot of surface for little benefit. The web frontend always
   uploads. Do not add a web fallback without re-opening this decision with the
   maintainer.
-- **Permission gate.** The client reads the session `permissions` projection at
-  pick time; only `danger-full-access` and `auto` (which also runs without a
-  sandbox) register local references. Every other value — `workspace-write`,
-  `read-only`, `custom`, or a missing projection — keeps uploading. Cards
-  already in the dock are never converted.
+- **No permission gate, by design.** The DSH sandbox confines file writes and
+  edits only; reads stay unrestricted in every mode (`read-only` denies
+  mutations, `workspace-write` confines them to the workspace, and the Linux
+  bwrap profile is a filesystem-wide read-only bind). A local reference is
+  therefore readable under `workspace-write`, `read-only` and `custom` too, and
+  copying the file into `~/.dsh/uploads` would grant no extra access — that
+  directory is not writable under `workspace-write` either. The composer never
+  reads the `permissions` projection: the only gate is whether the shell can
+  report a real host path. This supersedes the first permission-gated version,
+  where `workspace-write` / `read-only` / `custom` uploaded instead.
 - **No copying, no ownership.** The host route (`POST /local`, loopback callers
   only) stats the file and registers a pending reference; nothing enters
   `uploads/`, the dedup index, or TTL/GC. References fold and inject like the

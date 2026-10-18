@@ -62,8 +62,6 @@ export interface ClientCoreDeps {
   delete?(args: PathArgs): Promise<unknown>
   /** Reference original absolute paths instead of uploading bytes. */
   localRef?(args: LocalRefArgs): Promise<LocalRefResult>
-  /** Current session permission preset value (`danger-full-access`, `auto`, ...). */
-  permissionOf?(sessionId?: string): string | undefined
   /** The shell's real host path for a picked file, or null when unavailable. */
   hostPathFor?(file: File): string | null
   configGet?(): Promise<DfuConfig | null>
@@ -181,7 +179,6 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const remove = deps.remove
   const del = deps.delete
   const localRef = deps.localRef
-  const permissionOf = deps.permissionOf
   const hostPathFor = deps.hostPathFor
   const configGet = deps.configGet
   const configSet = deps.configSet
@@ -247,7 +244,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       delete: '删除文件（不可找回）',
       dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
       localBadge: '本地',
-      localCardHint: '完全权限下直接引用本机原始文件，未上传副本；解除卡片只会移除引用，不会删除原文件。',
+      localCardHint: '直接引用本机原始文件，未上传副本；解除卡片只会移除引用，不会删除原文件。',
       failed: '失败',
       settingsTitle: '文件上传',
       ttlLabel: '自动清理保留期',
@@ -320,7 +317,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       delete: 'Delete file (permanent)',
       dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
       localBadge: 'Local',
-      localCardHint: 'Full access references the original file on this machine; nothing was uploaded. Removing the card only drops the reference — the original file is never deleted.',
+      localCardHint: 'References the original file on this machine; nothing was uploaded. Removing the card only drops the reference — the original file is never deleted.',
       failed: 'Failed',
       settingsTitle: 'File uploads',
       ttlLabel: 'Auto-cleanup retention',
@@ -667,18 +664,13 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         store.setNotice(sessionId, tf('tooManyFilesBody', { n: maxFiles }))
         return
       }
-      // Local references (no upload): the Desktop shell can report a picked
-      // file's real absolute path, and a full-access session (auto review runs
-      // unsandboxed too) may read any path, so the file joins the existing-file
-      // group by reference instead of copying its bytes. Any other permission
-      // mode, or a shell without host paths, keeps uploading.
-      let permission: string | undefined
-      try {
-        permission = typeof permissionOf === 'function' ? permissionOf(sessionId) : undefined
-      } catch {
-        permission = undefined
-      }
-      const localAllowed = permission === 'danger-full-access' || permission === 'auto'
+      // Local references (no upload): the Desktop shell reports a picked file's
+      // real absolute path, so the file joins the existing-file group by
+      // reference instead of copying its bytes. Permission mode is deliberately
+      // not consulted: the DSH sandbox confines writes only, reads are
+      // unrestricted in every mode, so a local reference stays readable under
+      // workspace-write / read-only / custom too. A served web page has no host
+      // paths (and pasted bytes have none either), so those files still upload.
       files.forEach((file: File) => {
         const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
         const isImage = IMAGE_TYPES.includes(file.type)
@@ -773,7 +765,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             })
         }
         let originalPath: string | null = null
-        if (localAllowed && typeof hostPathFor === 'function') {
+        if (typeof hostPathFor === 'function') {
           try {
             const p = hostPathFor(file)
             if (typeof p === 'string' && p !== '') originalPath = p

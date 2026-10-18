@@ -46,31 +46,10 @@ export const inject = ['slots', 'locale']
 
 export function apply(ctx: PluginContext) {
   if (react === null || typeof react.createElement !== 'function') return
-  // Current-session permission preset, read from the live sessions service.
-  // This is the projection the composer's permission chip renders, so a
-  // mid-session switch is visible on the next pick; an absent service or
-  // projection (older dsh, a not-yet-projected new session) means "upload".
-  const permissionOf = (sessionId?: string): string | undefined => {
-    if (!sessionId) return undefined
-    try {
-      const sessions = ctx.get<{
-        binding?(id: string): {
-          session?: { projections?: { faceOf?(key: string): { getSnapshot?(): unknown } } }
-        } | undefined
-      }>('sessions')
-      if (sessions === undefined || typeof sessions.binding !== 'function') return undefined
-      const binding = sessions.binding(sessionId)
-      const projections = binding && binding.session ? binding.session.projections : undefined
-      const face = projections && typeof projections.faceOf === 'function' ? projections.faceOf('permissions') : undefined
-      const snapshot = face && typeof face.getSnapshot === 'function' ? face.getSnapshot() : undefined
-      const currentValue = snapshot && typeof snapshot === 'object' ? (snapshot as { currentValue?: unknown }).currentValue : undefined
-      return typeof currentValue === 'string' ? currentValue : undefined
-    } catch {
-      return undefined
-    }
-  }
   // Desktop preload bridge: the real host path of a picked file. A served web
-  // page has no bridge, so its files keep uploading.
+  // page has no bridge, so its files keep uploading. This is the only gate —
+  // permission mode is deliberately not consulted (the DSH sandbox confines
+  // writes only, so reads stay available in every mode).
   const hostPathFor = (file: File): string | null => {
     try {
       const bridge = (globalThis as { __DSH_HOST_PATHS__?: { pathFor?(f: File): unknown } }).__DSH_HOST_PATHS__
@@ -178,7 +157,6 @@ export function apply(ctx: PluginContext) {
       })
       return res.json()
     },
-    permissionOf: permissionOf,
     hostPathFor: hostPathFor,
     configGet: async () => {
       const res = await fetch('/dsh-web-file-uploader/config?action=get')

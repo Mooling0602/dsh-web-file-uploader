@@ -127,12 +127,12 @@ const deletes: Array<{ sessionId?: string; path: string; id?: string }> = []
 let reply: UploadReply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
 let maxFilesSetting = 100
 
-// Local references: the composer reads the session permission and, only under
-// full access, asks the shell for each picked file's real host path. The stub
-// maps file names to paths; a missing name answers null (upload as before).
+// Local references: the composer asks the shell for each picked file's real
+// host path. When one is available the card references it instead of uploading,
+// regardless of permission mode (the DSH sandbox confines writes only). The
+// stub maps file names to paths; a missing name answers null (upload as before).
 interface LocalCall { sessionId?: string; cards: Array<{ id: string; name: string; mime: string; size: number; path: string }> }
 const localCalls: LocalCall[] = []
-let currentPermission: string | undefined
 let localFails = false
 const hostPaths = new Map<string, string>()
 
@@ -150,7 +150,6 @@ const core = createClientCore({
     if (localFails) return { ok: false, results: [{ ok: false, error: 'not a file' }] }
     return { ok: true, results: [{ ok: true, name: card.name, path: card.path, size: card.size, local: true }] }
   },
-  permissionOf: () => currentPermission,
   hostPathFor: (file: File) => hostPaths.get((file as unknown as { name: string }).name) ?? null,
   configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting }),
   insertStyles: () => {},
@@ -427,18 +426,17 @@ tree = cards()
 ok('dismissing clears the notice', tree === null, tree)
 maxFilesSetting = 100
 
-// ---- 8: full access + Desktop host paths reference the original ------------
-// The shell (Desktop preload) can report a picked file's real absolute path.
-// Under full access (auto review runs unsandboxed too) the card references it
-// instead of uploading bytes; anything else keeps uploading.
-currentPermission = 'danger-full-access'
+// ---- 8: a Desktop host path references the original file (no upload) ------
+// The shell (Desktop preload) can report a picked file's real absolute path;
+// the card references it instead of uploading bytes. Permission mode is not a
+// gate: the DSH sandbox confines writes only, so the file stays readable.
 hostPaths.set('local-note.txt', '/home/user/originals/local-note.txt')
 const uploadsBeforeLocal = uploads.length
 const localBefore = localCalls.length
 await pick('local-note.txt')
 await settle()
 tree = cards()
-ok('full access registers a local reference instead of uploading', uploads.length === uploadsBeforeLocal && localCalls.length === localBefore + 1, { uploads, localCalls })
+ok('a host path registers a local reference instead of uploading', uploads.length === uploadsBeforeLocal && localCalls.length === localBefore + 1, { uploads, localCalls })
 const localCall = localCalls[localCalls.length - 1]
 ok('the local reference carries the absolute path', localCall.cards[0]?.path === '/home/user/originals/local-note.txt', localCall)
 ok('the local reference carries the session id', localCall.sessionId === S)
@@ -457,34 +455,39 @@ ok('removing a local card un-references it', removes.some((r) => r.path === '/ho
 tree = cards()
 ok('removing the local card drops it', byClass(tree, 'dfu-chip').length === 0)
 
-// The auto-review preset also runs without a sandbox, so it references too.
-currentPermission = 'auto'
-hostPaths.set('auto-note.txt', '/home/user/originals/auto-note.txt')
-const localBeforeAuto = localCalls.length
-await pick('auto-note.txt')
+// ---- 9: a file without a host path still uploads -------------------------
+// A served web page has no bridge, and pasted bytes have no path; both answer
+// null from hostPathFor and keep the upload transport.
+const uploadsBeforeNoPath = uploads.length
+const localsBeforeNoPath = localCalls.length
+reply = { ok: true, path: '/u/no-path.txt', size: 12, dedup: false }
+await pick('no-path.txt')
 await settle()
-ok('auto review also registers a local reference', localCalls.length === localBeforeAuto + 1, localCalls)
+tree = cards()
+ok('a file without a host path keeps uploading', uploads.length === uploadsBeforeNoPath + 1 && localCalls.length === localsBeforeNoPath, { uploads, localCalls })
+ok('the uploaded card renders no local badge', !textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+ok('the uploaded card keeps the trash action', byClass(tree, 'dfu-chip-delete').length === 1)
 await closeCard()
 
-// ---- 9: other permission modes keep the upload channel ---------------------
-for (const mode of ['workspace-write', 'read-only', 'custom', undefined] as const) {
-  currentPermission = mode
-  const prefix = mode === undefined ? 'unset' : mode
-  const fileName = 'perm-' + prefix + '.txt'
-  hostPaths.set(fileName, '/home/user/originals/' + fileName)
-  const uploadsBefore = uploads.length
-  const localsBefore = localCalls.length
-  reply = { ok: true, path: '/u/' + fileName, size: 12, dedup: false }
-  await pick(fileName)
-  await settle()
-  tree = cards()
-  ok('permission ' + prefix + ' keeps uploading', uploads.length === uploadsBefore + 1 && localCalls.length === localsBefore, { uploads, localCalls })
-  ok('permission ' + prefix + ' renders no local badge', !textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
-  await closeCard()
-}
+// A mixed pick decides per file: the path one references, the other uploads.
+hostPaths.set('mixed-local.txt', '/home/user/originals/mixed-local.txt')
+reply = { ok: true, path: '/u/mixed-upload.txt', size: 12, dedup: false }
+const uploadsBeforeMixed = uploads.length
+const localsBeforeMixed = localCalls.length
+await pickMany([{ name: 'mixed-local.txt', size: 12 }, { name: 'mixed-upload.txt', size: 12 }])
+await settle()
+tree = cards()
+ok('a mixed pick splits between reference and upload', uploads.length === uploadsBeforeMixed + 1 && localCalls.length === localsBeforeMixed + 1, { uploads, localCalls })
+ok('the mixed pick keeps both cards', byClass(tree, 'dfu-chip').length === 2, byClass(tree, 'dfu-chip').length)
+ok('only the path file is marked local', byClass(tree, 'dfu-chip-local').length === 1, byClass(tree, 'dfu-chip-local').length)
+;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+;(byClass(cards(), 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+tree = cards()
+ok('the mixed cards close', tree === null, tree)
 
 // ---- 10: a refused local reference falls back to uploading the bytes -------
-currentPermission = 'danger-full-access'
 hostPaths.set('fallback.txt', '/home/user/originals/fallback.txt')
 localFails = true
 const uploadsBeforeFallback = uploads.length
@@ -499,11 +502,9 @@ await closeCard()
 localFails = false
 
 // ---- 11: delete-all never deletes a local original -------------------------
-currentPermission = 'danger-full-access'
 hostPaths.set('local-del.txt', '/home/user/originals/local-del.txt')
 await pick('local-del.txt')
 await settle()
-currentPermission = 'workspace-write'
 reply = { ok: true, path: '/u/normal-del.txt', size: 12, dedup: false }
 await pick('normal-del.txt')
 await settle()

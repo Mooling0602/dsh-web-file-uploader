@@ -183,13 +183,13 @@ race in-flight writes; no background task is required.
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.
 
-### Local references (Desktop, full access)
+### Local references (Desktop)
 
-The DSH Desktop shell can report each picked file's real absolute path. When the
-current session runs with **full access** (`danger-full-access`) or **auto
-review** (`auto`, which also runs without a sandbox), the plugin registers that
-absolute path instead of uploading bytes: the card is marked **Local** and the
-file is referenced in place. The reference is handled exactly like the existing
+The DSH Desktop shell can report each picked file's real absolute path, so the
+plugin registers that path instead of uploading bytes: the card is marked
+**Local** and the file is referenced in place. Permission mode is deliberately
+not consulted — the DSH sandbox confines file **writes** only, so reads stay
+available in every mode. The reference is handled exactly like the existing
 (dedup) file group:
 
 - Nothing is copied into `~/.dsh/uploads/`; no dedup index entry is written and
@@ -201,10 +201,13 @@ file is referenced in place. The reference is handled exactly like the existing
   before folding the paths are injected one per line. Under a multimodal model a
   local image still becomes a native image block — the host reads the original
   file, the client uploads nothing.
-- Every other permission mode (`workspace-write`, `read-only`, `custom`, or an
-  unknown/missing value on a new session) keeps uploading. The permission is
-  read when files are picked, so a mid-session switch applies to the next pick;
-  already uploaded cards are never converted.
+- Permission mode is not a gate: `read-only` denies writes and `workspace-write`
+  confines them to the workspace, while reads work everywhere (the Linux
+  backend is a filesystem-wide read-only bind). Copying a file into
+  `~/.dsh/uploads` therefore grants no extra read access — and that directory
+  is not even writable under `workspace-write`. This replaces the earlier
+  permission-gated behavior: `workspace-write` / `read-only` / `custom` used to
+  upload; now they reference the original too.
 - A served web page cannot see host paths (browser File API limitation), so the
   web UI always uploads. The feature is Desktop-only by construction.
 - If a path cannot be registered (moved, not a regular file, route unreachable),
