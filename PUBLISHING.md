@@ -9,7 +9,7 @@ The installable artifact is the **built tarball attached to a GitHub Release**: 
 ```bash
 # Tarball from a GitHub Release (recommended; already built)
 dsh plugin --profile web add \
-  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-alpha.2/dsh-web-file-uploader-1.0.0-alpha.2.tgz
+  https://github.com/Mooling0602/dsh-web-file-uploader/releases/download/1.0.0-rc.1/dsh-web-file-uploader-1.0.0-rc.1.tgz
 
 # npm registry (after the first manual publish; pre-releases live under the
 # `next` tag until a stable release moves `latest`)
@@ -19,7 +19,7 @@ dsh plugin --profile web add dsh-web-file-uploader@next
 dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 # Local directory (fastest for development; run pnpm build there first)
-dsh plugin --profile web add ../dsh-web-file-uploader
+dsh plugin --profile web add /path/to/dsh-web-file-uploader
 ```
 
 The npm channel starts with the first manual publish (see [npm publishing](#npm-publishing-oidc-trusted-publishing)); the release tarball works before that.
@@ -31,21 +31,20 @@ A tarball URL is pinned in the profile manifest: switching releases means `remov
 ### Prerequisites
 
 - The repository ships **sources only**: `lib/` and `client/src/client.js` are git-ignored build output. The GitHub Release tarball and the npm package contain the built files; a checkout does not.
+- Building and running the plugin needs **Node `^22.19.0 || >=24.0.0`** (see `package.json#engines`); CI and the release workflow use Node 24 with pnpm 12.
 - Build a checkout with `pnpm build` (compiles `src/` into `lib/` and writes `lib/client.js` + `client/src/client.js`); `pnpm install` also runs that build through the `prepare` script.
-- Git-hosted installs run the `prepare` script on install. pnpm blocks build scripts by default — allow the exact key pnpm prints in `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run (the plugin manager UI asks for the same approval).
+- Git-hosted installs run the `prepare` script on install. pnpm blocks build scripts by default — allow the exact key pnpm prints in `pnpm-workspace.yaml` (`allowBuilds`) of the profile, then re-run (the plugin manager UI asks for the same approval), or pass `--allow-build` to the install for a one-off run.
 - ⚠️ The client build wrapper in `scripts/build.ts` is a best-effort emulation of the DSH web toolchain output. **Verify it against the real web build before distributing** (compare with a shipped `@deepseek-ai/dsh-client-*` `lib/client.js`).
 
 ### Troubleshooting: `ERR_PNPM_UNEXPECTED_STORE`
 
 If `dsh plugin --profile web add <package>` fails with `ERR_PNPM_UNEXPECTED_STORE` ("Unexpected store location"), it is **not a plugin issue** — it is a pnpm store-version mismatch in the web profile:
 
-- The profile's `node_modules` was installed by a different pnpm major version (e.g. pnpm 10) than the one currently on `PATH` (e.g. pnpm 11). Any `pnpm` operation in that profile fails the same way, for any package — it fires before dependency resolution.
-- Fix: migrate the profile to the current pnpm store:
+- The profile's `node_modules` was installed by a different pnpm major version (e.g. pnpm 10) than the one currently on `PATH` (e.g. pnpm 12). Any `pnpm` operation in that profile fails the same way, for any package — it fires before dependency resolution.
+- Fix: migrate the profile to the current pnpm store by reinstalling it, which relinks every package against the store on `PATH`:
 
   ```bash
-  # allow non-interactive module purge, then migrate
-  printf 'confirmModulesPurge=false\n' >> ~/.dsh/profiles/web/.npmrc
-  cd ~/.dsh/profiles/web && pnpm install
+  cd ~/.dsh/profiles/web && pnpm install --force
   ```
 
   Afterwards `dsh plugin --profile web add <package>` works again. Fresh users (no existing profile) never hit this — the profile is initialized with the current pnpm.
@@ -164,10 +163,10 @@ The workflow publishes to npm with [Trusted Publishing](https://docs.npmjs.com/t
 
 Three one-time steps make it work:
 
-1. **Claim the package name with a manual first publish.** npm cannot configure a trusted publisher for a package that does not exist yet (and `npm trust` rejects it too). From a checkout of the first release tag:
+1. **Claim the package name with a manual first publish.** npm cannot configure a trusted publisher for a package that does not exist yet (and `npm trust` rejects it too). From a checkout of the first release tag you want on npm — the current one is `1.0.0-rc.1`:
 
    ```bash
-   git checkout 1.0.0-alpha.4
+   git checkout 1.0.0-rc.1
    pnpm install                        # runs the build through `prepare`
    npm login                           # web login + 2FA, 2-hour session token
    npm publish --access public --tag next   # prerelease -> `next`, never `latest`
@@ -175,7 +174,7 @@ Three one-time steps make it work:
 
    The bootstrap publish is signed by your account, not by CI, so it has no provenance. Stable versions publish without `--tag next`; a first stable release uses plain `npm publish --access public` and creates `latest`. Until a stable release does that, the npm channel is `dsh plugin --profile web add dsh-web-file-uploader@next` — `latest` does not exist yet.
 
-2. **Configure the trusted publisher** — npmjs.com → *Packages → dsh-web-file-uploader → Settings → Trusted publishing → GitHub Actions*, or from a logged-in CLI with npm ≥ 11.15.0:
+2. **Configure the trusted publisher** — npmjs.com → *Packages → dsh-web-file-uploader → Settings → Trusted publishing → GitHub Actions*, or from a logged-in CLI with npm ≥ 11.5.1 (the same floor the release workflow pins with `npx --yes --package 'npm@^11.5.1'`):
 
    ```bash
    npm trust github dsh-web-file-uploader \
@@ -271,7 +270,7 @@ dsh plugin --profile web add github:Mooling0602/dsh-web-file-uploader
 
 ```bash
 cd <path-to-checkout> && pnpm build   # regenerates lib/ + client/src
-dsh plugin --profile web add ../dsh-web-file-uploader
+dsh plugin --profile web add <path-to-checkout>   # absolute path, or a path relative to the profile dir
 ```
 
 ### Verify and restart
@@ -280,7 +279,7 @@ dsh plugin --profile web add ../dsh-web-file-uploader
 dsh plugin --profile web ls dsh-web-file-uploader   # installed version
 ```
 
-Restart the dsh web process and refresh the page afterwards. The client bundle is served as `/plugins/dsh-web-file-uploader/client.js?rev=<short hash>` where `rev` is the content hash of `lib/client.js`, so a changed bundle automatically busts the browser cache once the server recomposes its boot manifest — no manual cache clearing is needed.
+Restart the dsh web process and refresh the page afterwards; the profile reloads the plugin from `lib/` on start, so a rebuilt bundle is picked up by the next server start rather than by hot-swapping the running process.
 
 ## Uninstall
 
