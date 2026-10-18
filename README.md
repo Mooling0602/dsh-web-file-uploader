@@ -82,7 +82,7 @@ The injected prompt uses a readable, English-only format (the model reads it):
 
 ```
 -----
-[Attached files] Some files have uploaded with this message:
+[Attached files] Some files have been uploaded with this message:
 - /path/to/file1.txt
 - /path/to/image1.png
 Read the files or use tools to analyse (like vision tools), then answer the user.

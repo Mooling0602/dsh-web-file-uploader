@@ -45,7 +45,7 @@ Everything a **human user sees in the UI** is localized through the app's
 | --- | --- | --- |
 | Commit message | English | `fix: consume pending batch after injection` |
 | Code comment | English | `// claimed messages are deep-frozen; clone, don't mutate` |
-| Model prompt | English | `[Attached files] Some files have uploaded with this message: …` |
+| Model prompt | English | `[Attached files] Some files have been uploaded with this message: …` |
 | UI button | i18n | `zh: '上传附件'`, `en: 'Attach files'` |
 
 ## Commit types

@@ -1294,7 +1294,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         const push = blocks.slice()
         if (lines.length > 0) {
           const text =
-            '\n-----\n[Attached files] Some files have uploaded with this message:\n' +
+            '\n-----\n[Attached files] Some files have been uploaded with this message:\n' +
             lines.join('\n') +
             '\nRead the files or use tools to analyse (like vision tools), then answer the user.'
           push.push({ type: 'text', text })
