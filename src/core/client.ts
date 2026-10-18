@@ -50,6 +50,8 @@ export interface FileCard {
   savedSize?: number
   /** The host reused an already stored copy instead of writing these bytes. */
   dedup?: boolean
+  /** The card references the file's own absolute path; nothing was uploaded. */
+  local?: boolean
 }
 
 /** Environment interactions the client core needs, injected by the seam. */
@@ -58,11 +60,45 @@ export interface ClientCoreDeps {
   upload(args: UploadArgs): Promise<UploadResult>
   remove(args: PathArgs): Promise<unknown>
   delete?(args: PathArgs): Promise<unknown>
+  /** Reference original absolute paths instead of uploading bytes. */
+  localRef?(args: LocalRefArgs): Promise<LocalRefResult>
+  /** Current session permission preset value (`danger-full-access`, `auto`, ...). */
+  permissionOf?(sessionId?: string): string | undefined
+  /** The shell's real host path for a picked file, or null when unavailable. */
+  hostPathFor?(file: File): string | null
   configGet?(): Promise<DfuConfig | null>
   configSet?(cfg: Partial<DfuConfig>): Promise<(DfuConfig & { ok?: boolean }) | null>
   filesList?(): Promise<FilesListResult | null>
   deleteMany?(args: { sessionId?: string; paths: string[] }): Promise<DeleteManyResult | null>
   insertStyles?(css: string): void
+}
+
+export interface LocalRefCard {
+  id: string
+  name: string
+  mime: string
+  size: number
+  path: string
+}
+
+export interface LocalRefArgs {
+  sessionId?: string
+  cards: LocalRefCard[]
+}
+
+export interface LocalRefRow {
+  ok: boolean
+  name?: string
+  path?: string
+  size?: number
+  local?: boolean
+  error?: string
+}
+
+export interface LocalRefResult {
+  ok: boolean
+  results?: LocalRefRow[]
+  error?: string
 }
 
 export interface UploadArgs {
@@ -144,6 +180,9 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const upload = deps.upload
   const remove = deps.remove
   const del = deps.delete
+  const localRef = deps.localRef
+  const permissionOf = deps.permissionOf
+  const hostPathFor = deps.hostPathFor
   const configGet = deps.configGet
   const configSet = deps.configSet
   const filesList = deps.filesList
@@ -207,6 +246,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       remove: '移除',
       delete: '删除文件（不可找回）',
       dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
+      localBadge: '本地',
+      localCardHint: '完全权限下直接引用本机原始文件，未上传副本；解除卡片只会移除引用，不会删除原文件。',
       failed: '失败',
       settingsTitle: '文件上传',
       ttlLabel: '自动清理保留期',
@@ -278,6 +319,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       remove: 'Remove',
       delete: 'Delete file (permanent)',
       dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
+      localBadge: 'Local',
+      localCardHint: 'Full access references the original file on this machine; nothing was uploaded. Removing the card only drops the reference — the original file is never deleted.',
       failed: 'Failed',
       settingsTitle: 'File uploads',
       ttlLabel: 'Auto-cleanup retention',
@@ -624,6 +667,18 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         store.setNotice(sessionId, tf('tooManyFilesBody', { n: maxFiles }))
         return
       }
+      // Local references (no upload): the Desktop shell can report a picked
+      // file's real absolute path, and a full-access session (auto review runs
+      // unsandboxed too) may read any path, so the file joins the existing-file
+      // group by reference instead of copying its bytes. Any other permission
+      // mode, or a shell without host paths, keeps uploading.
+      let permission: string | undefined
+      try {
+        permission = typeof permissionOf === 'function' ? permissionOf(sessionId) : undefined
+      } catch {
+        permission = undefined
+      }
+      const localAllowed = permission === 'danger-full-access' || permission === 'auto'
       files.forEach((file: File) => {
         const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9)
         const isImage = IMAGE_TYPES.includes(file.type)
@@ -660,60 +715,108 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             store.update(sessionId, id, { loaded: loaded, total: total || file.size })
           }
         }
-        upload({
+        const settleUpload = (res: UploadResult) => {
+          const entry = store.files(sessionId).find((x) => x.id === id)
+          const cancelled = entry !== undefined && entry.status === 'cancelling'
+          if (res && res.ok) {
+            // Another card already owns this stored path (a repeat upload
+            // dedups onto the same copy): merge into that card instead of
+            // showing a duplicate, and release this upload's reference so the
+            // host's pending count stays in step with the visible cards.
+            const merged = res.path !== undefined &&
+              store.files(sessionId).some((x) => x.id !== id && x.path === res.path)
+            if (cancelled) {
+              // Lost the race by a hair: the host had already published the
+              // file. Take the reference straight back out so it is never
+              // injected and the TTL sweep can reclaim it.
+              store.remove(sessionId, id)
+              unref(sessionId, res.path, id)
+            } else if (merged) {
+              store.remove(sessionId, id)
+              unref(sessionId, res.path, id)
+            } else if (entry !== undefined) {
+              store.update(sessionId, id, {
+                status: 'done',
+                path: res.path,
+                savedSize: res.size,
+                dedup: res.dedup === true,
+              })
+            } else {
+              unref(sessionId, res.path, id)
+            }
+          } else if (cancelled) {
+            store.remove(sessionId, id)
+          } else if (entry !== undefined) {
+            store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
+          }
+        }
+        const uploadNow = () => {
+          upload({
+            sessionId: sessionId,
+            id: id,
+            name: file.name,
+            mime: file.type || '',
+            size: file.size,
+            file: file,
+            signal: controller === null ? undefined : controller.signal,
+            onProgress: onProgress,
+          })
+            .then(settleUpload)
+            .catch((err) => {
+              const entry = store.files(sessionId).find((x) => x.id === id)
+              if (entry === undefined) return
+              if (entry.status === 'cancelling') {
+                store.remove(sessionId, id)
+                return
+              }
+              store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
+            })
+        }
+        let originalPath: string | null = null
+        if (localAllowed && typeof hostPathFor === 'function') {
+          try {
+            const p = hostPathFor(file)
+            if (typeof p === 'string' && p !== '') originalPath = p
+          } catch {
+            originalPath = null
+          }
+        }
+        if (originalPath === null || typeof localRef !== 'function') {
+          uploadNow()
+          return
+        }
+        // Register the absolute path; on refusal (moved, not a file, route
+        // unreachable) fall back to uploading these bytes so the pick is never
+        // silently lost.
+        localRef({
           sessionId: sessionId,
-          id: id,
-          name: file.name,
-          mime: file.type || '',
-          size: file.size,
-          file: file,
-          signal: controller === null ? undefined : controller.signal,
-          onProgress: onProgress,
+          cards: [{ id: id, name: file.name, mime: file.type || '', size: file.size, path: originalPath }],
         })
           .then((res) => {
-            const entry = store.files(sessionId).find((x) => x.id === id)
-            const cancelled = entry !== undefined && entry.status === 'cancelling'
-            if (res && res.ok) {
-              // Another card already owns this stored path (a repeat upload
-              // dedups onto the same copy): merge into that card instead of
-              // showing a duplicate, and release this upload's reference so the
-              // host's pending count stays in step with the visible cards.
-              const merged = res.path !== undefined &&
-                store.files(sessionId).some((x) => x.id !== id && x.path === res.path)
-              if (cancelled) {
-                // Lost the race by a hair: the host had already published the
-                // file. Take the reference straight back out so it is never
-                // injected and the TTL sweep can reclaim it.
-                store.remove(sessionId, id)
-                unref(sessionId, res.path, id)
-              } else if (merged) {
-                store.remove(sessionId, id)
-                unref(sessionId, res.path, id)
-              } else if (entry !== undefined) {
-                store.update(sessionId, id, {
-                  status: 'done',
-                  path: res.path,
-                  savedSize: res.size,
-                  dedup: res.dedup === true,
-                })
-              } else {
-                unref(sessionId, res.path, id)
-              }
-            } else if (cancelled) {
-              store.remove(sessionId, id)
-            } else if (entry !== undefined) {
-              store.update(sessionId, id, { status: 'error', error: (res && res.error) || 'upload failed' })
-            }
-          })
-          .catch((err) => {
-            const entry = store.files(sessionId).find((x) => x.id === id)
-            if (entry === undefined) return
-            if (entry.status === 'cancelling') {
-              store.remove(sessionId, id)
+            const row = res && Array.isArray(res.results) ? res.results[0] : undefined
+            if (!res || !res.ok || !row || row.ok !== true) {
+              uploadNow()
               return
             }
-            store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
+            const entry = store.files(sessionId).find((x) => x.id === id)
+            const cancelled = entry !== undefined && entry.status === 'cancelling'
+            if (cancelled) {
+              store.remove(sessionId, id)
+              unref(sessionId, row.path, id)
+              return
+            }
+            const merged = row.path !== undefined &&
+              store.files(sessionId).some((x) => x.id !== id && x.path === row.path)
+            if (merged) {
+              store.remove(sessionId, id)
+              unref(sessionId, row.path, id)
+              return
+            }
+            if (entry !== undefined) {
+              store.update(sessionId, id, { status: 'done', path: row.path, savedSize: row.size, local: true })
+            }
           })
+          .catch(() => uploadNow())
       })
     }
     return react.createElement(
@@ -806,8 +909,10 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         // such a card would delete one shared file that other cards (and other
         // sessions, including earlier messages) still reference. Those cards
         // only un-reference (×); file-level deletion stays in the settings
-        // panel, where the in-use rule still protects live references.
-        if (f.dedup !== true) {
+        // panel, where the in-use rule still protects live references. A local
+        // reference points at the user's own file, which the host must never
+        // delete either.
+        if (f.dedup !== true && f.local !== true) {
           actions.push(
             react.createElement(
               'button',
@@ -850,13 +955,26 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       chips.push(
         react.createElement(
           'div',
-          { key: f.id, className: 'dfu-chip', title: f.dedup === true ? tFn('dedupCardHint') : undefined },
+          {
+            key: f.id,
+            className: 'dfu-chip',
+            title: f.local === true ? tFn('localCardHint') : f.dedup === true ? tFn('dedupCardHint') : undefined,
+          },
           preview,
           react.createElement(
             'div',
             { className: 'dfu-chip-body' },
             react.createElement('span', { className: 'dfu-chip-name', title: f.name }, f.name),
-            react.createElement('span', { className: 'dfu-chip-meta' }, formatSize(f.size), ' · ', statusNode),
+            react.createElement(
+              'span',
+              { className: 'dfu-chip-meta' },
+              f.local === true
+                ? react.createElement('span', { className: 'dfu-chip-local', title: tFn('localCardHint') }, tFn('localBadge'), ' · ')
+                : null,
+              formatSize(f.size),
+              ' · ',
+              statusNode,
+            ),
           ),
           react.createElement('span', { className: 'dfu-chip-actions' }, actions),
         ),
@@ -917,8 +1035,9 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     const settledPaths = files.filter((f) => f.status === 'done' && f.path).map((f) => f.path as string)
     const removable = files.filter((f) => f.status !== 'uploading' && f.status !== 'cancelling')
     // A card whose upload reused an existing copy must not take that shared
-    // file down with it; a batch only un-references those cards.
-    const deletable = removable.filter((f) => f.status === 'done' && f.path && f.dedup !== true)
+    // file down with it; a local reference points at the user's own file. A
+    // batch only un-references those cards.
+    const deletable = removable.filter((f) => f.status === 'done' && f.path && f.dedup !== true && f.local !== true)
     const copyAll = () => {
       if (!settledPaths.length) return
       copyText(settledPaths.join('\n'))
@@ -931,7 +1050,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     }
     const deleteSettled = () => {
       removable.forEach((f) => {
-        if (f.status === 'done' && f.path && f.dedup !== true) deleteCard(sessionId, f.id)
+        if (f.status === 'done' && f.path && f.dedup !== true && f.local !== true) deleteCard(sessionId, f.id)
         else removeCard(sessionId, f.id)
       })
       setArmed(null)
@@ -1150,6 +1269,12 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   max-width: 170px; font-weight: 500;
 }
 .dfu-chip-meta { color: var(--dsw-alias-label-secondary, #8a8f98); font-size: 12px; }
+/* Local reference badge: no bytes were uploaded, the model reads the original. */
+.dfu-chip-local {
+  color: var(--dsw-alias-brand-primary, #4d6bfe);
+  border: 1px solid currentColor; border-radius: 999px;
+  padding: 0 5px; font-size: 11px; line-height: 1.5;
+}
 .dfu-chip-status { font-size: 12px; }
 .dfu-chip-status-active { color: var(--dsw-alias-brand-primary, #4d6bfe); }
 .dfu-chip-status-ok { color: var(--dsw-alias-state-success-primary, #22c55e); }

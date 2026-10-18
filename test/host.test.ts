@@ -330,6 +330,82 @@ writeFileSync(orphan + '/orphan.txt', 'orphan-content')
 await core.collect()
 ok('startup sweep unpacks leftover fold folders', existsSync(uploadsPath + '/orphan.txt') && !existsSync(orphan))
 
+// ---- local references (Desktop same-machine, no upload) --------------------
+// Under full access the composer may register a picked file's real absolute
+// path instead of uploading bytes: nothing is copied into uploads/, no dedup
+// index entry is written, the reference groups/folds/injects like an existing
+// file, and the host must never delete the original.
+const originals = ROOT + '/originals'
+mkdirSync(originals, { recursive: true })
+const localPath = originals + '/local-note.txt'
+writeFileSync(localPath, 'local-content-AAAA')
+const S9 = 'sess-local'
+const localRegistered = await core.registerLocal({
+  sessionId: S9,
+  cards: [{ id: 'local-card-1', name: 'local-note.txt', mime: 'text/plain', size: 18, path: localPath }],
+})
+ok('a local reference registers', localRegistered.ok === true && localRegistered.results[0].ok === true, JSON.stringify(localRegistered))
+ok('the result marks the reference local', localRegistered.results[0].local === true && localRegistered.results[0].path === localPath, JSON.stringify(localRegistered))
+ok('nothing was copied into uploads', !existsSync(uploadsPath + '/local-note.txt'))
+const localIdx = JSON.parse(readFileSync(uploadsPath + '/.dfu-index.json', 'utf8')) as Record<string, { path: string }>
+ok('no dedup index entry was written for the original', Object.values(localIdx).every((e) => e.path !== localPath))
+const localDecision = await runPreStep(S9)
+const localText = injectText(localDecision)
+ok('an unfolded local reference is injected as its absolute path', localText.includes('- ' + localPath), localText)
+ok('the original file is untouched', existsSync(localPath))
+const localList = await core.list()
+ok('local references do not enter the settings inventory', localList.files.every((f) => f.path !== localPath))
+
+const relRef = await core.registerLocal({ sessionId: S9, cards: [{ path: 'relative/note.txt' }] })
+ok('a relative path is refused', relRef.ok === false && relRef.results[0].ok === false, JSON.stringify(relRef))
+const missingRef = await core.registerLocal({ sessionId: S9, cards: [{ path: originals + '/missing.txt' }] })
+ok('a missing file is refused', missingRef.ok === false && missingRef.results[0].ok === false, JSON.stringify(missingRef))
+
+const localDelete = await core.delete({ sessionId: S9, path: localPath, id: 'local-card-1' })
+ok(
+  'deleting a local reference only drops the reference',
+  localDelete.ok === true && localDelete.removed === false && localDelete.reason === 'local-reference' && existsSync(localPath),
+  JSON.stringify(localDelete),
+)
+
+// A local-reference group folds into the existing-file paths.txt, listing the
+// originals instead of copies, and unfolding leaves the originals in place.
+const S10 = 'sess-local-fold'
+const localA = originals + '/local-a.txt'
+const localB = originals + '/local-b.txt'
+writeFileSync(localA, 'local-a')
+writeFileSync(localB, 'local-b')
+await core.registerLocal({
+  sessionId: S10,
+  cards: [
+    { id: 'local-a', name: 'local-a.txt', mime: 'text/plain', size: 7, path: localA },
+    { id: 'local-b', name: 'local-b.txt', mime: 'text/plain', size: 7, path: localB },
+  ],
+})
+const localFoldDecision = await runPreStep(S10)
+const localFoldText = injectText(localFoldDecision)
+const localFolders = foldFolderNames().filter((n) => n.endsWith('-existing'))
+ok('a local-reference group folds into a paths.txt folder', localFolders.length === 1, foldFolderNames())
+const localFolder = localFolders.length > 0 ? uploadsPath + '/' + localFolders[0] : ''
+const localTxt = existsSync(localFolder + '/paths.txt') ? readFileSync(localFolder + '/paths.txt', 'utf8') : ''
+ok('paths.txt lists the original absolute paths', localTxt.split('\n').filter(Boolean).sort().join(',') === [localA, localB].sort().join(','), localTxt)
+ok('the folded injection points at paths.txt', localFoldText.includes(localFolder + '/paths.txt'), localFoldText)
+ok('the originals were not moved', existsSync(localA) && existsSync(localB))
+await core.remove({ sessionId: S10, path: localA })
+await core.remove({ sessionId: S10, path: localB })
+await core.deleteMany({ sessionId: S10, paths: [] }) // flush the queued unfold
+ok('unfold removes the helper folder only', !existsSync(localFolder) && existsSync(localA) && existsSync(localB))
+
+// A local image under a multimodal model still becomes a native image block;
+// the host reads the original path, the client uploaded nothing.
+const localPng = originals + '/local-pic.png'
+writeFileSync(localPng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+await core.registerLocal({ sessionId: S9, cards: [{ id: 'local-pic', name: 'local-pic.png', mime: 'image/png', size: 8, path: localPng }] })
+const localImageDecision = await runPreStep(S9, 'fake-provider', 'multimodal-model')
+const localImageBlocks = decisionContent(localImageDecision).filter((b) => b.type === 'image')
+ok('a local image becomes a native image block', localImageBlocks.length === 1, localImageBlocks.length)
+await core.remove({ sessionId: S9, path: localPng, id: 'local-pic' })
+
 // multi-root: two uploads roots each with an index
 const ROOT2 = join(tmpdir(), 'dfu-host-core-test-2')
 rmSync(ROOT2, { recursive: true, force: true })

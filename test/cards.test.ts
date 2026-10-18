@@ -127,6 +127,15 @@ const deletes: Array<{ sessionId?: string; path: string; id?: string }> = []
 let reply: UploadReply = { ok: true, path: '/u/shared.txt', size: 12, dedup: false }
 let maxFilesSetting = 100
 
+// Local references: the composer reads the session permission and, only under
+// full access, asks the shell for each picked file's real host path. The stub
+// maps file names to paths; a missing name answers null (upload as before).
+interface LocalCall { sessionId?: string; cards: Array<{ id: string; name: string; mime: string; size: number; path: string }> }
+const localCalls: LocalCall[] = []
+let currentPermission: string | undefined
+let localFails = false
+const hostPaths = new Map<string, string>()
+
 const core = createClientCore({
   react,
   upload: async (args) => {
@@ -135,6 +144,14 @@ const core = createClientCore({
   },
   remove: async (args) => { removes.push(args); return { ok: true } },
   delete: async (args) => { deletes.push(args); return { ok: true } },
+  localRef: async (args) => {
+    localCalls.push(args)
+    const card = args.cards[0]
+    if (localFails) return { ok: false, results: [{ ok: false, error: 'not a file' }] }
+    return { ok: true, results: [{ ok: true, name: card.name, path: card.path, size: card.size, local: true }] }
+  },
+  permissionOf: () => currentPermission,
+  hostPathFor: (file: File) => hostPaths.get((file as unknown as { name: string }).name) ?? null,
   configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting }),
   insertStyles: () => {},
 })
@@ -206,11 +223,21 @@ const pickMany = async (files: Array<{ name: string; size: number }>): Promise<v
   const input = fileInput(attachSlot.render({ sessionId: S }))
   const onChange = input.props!.onChange as (event: unknown) => void
   const before = uploads.length
+  const beforeLocal = localCalls.length
   onChange({ target: { files: files.map((f) => ({ name: f.name, size: f.size, type: 'text/plain' })), value: '' } })
-  // The picker awaits the config before starting uploads; wait for the transport
-  // calls, then let the stubbed replies settle.
-  for (let i = 0; i < 50 && uploads.length === before; i += 1) await new Promise((r) => setTimeout(r, 0))
-  await new Promise((r) => setTimeout(r, 0))
+  // The picker awaits the config before starting the transport; wait for either
+  // channel (upload or local reference), then let the stubbed replies settle.
+  for (let i = 0; i < 50 && uploads.length === before && localCalls.length === beforeLocal; i += 1) await new Promise((r) => setTimeout(r, 0))
+  await settle()
+}
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 10; i += 1) await new Promise((r) => setTimeout(r, 0))
+}
+const closeCard = async (): Promise<void> => {
+  const tree = cards()
+  const btn = byClass(tree, 'dfu-chip-remove')[0]
+  ;(btn.props!.onClick as () => void)()
+  await settle()
 }
 const pick = async (name: string): Promise<void> => pickMany([{ name, size: 12 }])
 
@@ -399,6 +426,99 @@ ok('the notice has a dismiss button', dismissNotice.length === 1, dismissNotice.
 tree = cards()
 ok('dismissing clears the notice', tree === null, tree)
 maxFilesSetting = 100
+
+// ---- 8: full access + Desktop host paths reference the original ------------
+// The shell (Desktop preload) can report a picked file's real absolute path.
+// Under full access (auto review runs unsandboxed too) the card references it
+// instead of uploading bytes; anything else keeps uploading.
+currentPermission = 'danger-full-access'
+hostPaths.set('local-note.txt', '/home/user/originals/local-note.txt')
+const uploadsBeforeLocal = uploads.length
+const localBefore = localCalls.length
+await pick('local-note.txt')
+await settle()
+tree = cards()
+ok('full access registers a local reference instead of uploading', uploads.length === uploadsBeforeLocal && localCalls.length === localBefore + 1, { uploads, localCalls })
+const localCall = localCalls[localCalls.length - 1]
+ok('the local reference carries the absolute path', localCall.cards[0]?.path === '/home/user/originals/local-note.txt', localCall)
+ok('the local reference carries the session id', localCall.sessionId === S)
+ok('the local card shows the local badge', textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+ok('the local card hides the trash action', byClass(tree, 'dfu-chip-delete').length === 0)
+ok('the local card keeps the remove action', byClass(tree, 'dfu-chip-remove').length === 1)
+ok('the local card carries the local hint', byClass(tree, 'dfu-chip')[0].props!.title === dicts.zh.localCardHint, byClass(tree, 'dfu-chip')[0].props!.title)
+ok('the local hint exists in both languages', typeof dicts.en.localCardHint === 'string' && dicts.en.localCardHint.length > 0)
+ok('the local badge exists in both languages', typeof dicts.en.localBadge === 'string' && dicts.en.localBadge.length > 0)
+ok('no local hint leaks into the en card', dicts.zh.localCardHint !== dicts.en.localCardHint)
+
+// The remove action only drops the reference; the host never deletes the file.
+;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+ok('removing a local card un-references it', removes.some((r) => r.path === '/home/user/originals/local-note.txt'), removes)
+tree = cards()
+ok('removing the local card drops it', byClass(tree, 'dfu-chip').length === 0)
+
+// The auto-review preset also runs without a sandbox, so it references too.
+currentPermission = 'auto'
+hostPaths.set('auto-note.txt', '/home/user/originals/auto-note.txt')
+const localBeforeAuto = localCalls.length
+await pick('auto-note.txt')
+await settle()
+ok('auto review also registers a local reference', localCalls.length === localBeforeAuto + 1, localCalls)
+await closeCard()
+
+// ---- 9: other permission modes keep the upload channel ---------------------
+for (const mode of ['workspace-write', 'read-only', 'custom', undefined] as const) {
+  currentPermission = mode
+  const prefix = mode === undefined ? 'unset' : mode
+  const fileName = 'perm-' + prefix + '.txt'
+  hostPaths.set(fileName, '/home/user/originals/' + fileName)
+  const uploadsBefore = uploads.length
+  const localsBefore = localCalls.length
+  reply = { ok: true, path: '/u/' + fileName, size: 12, dedup: false }
+  await pick(fileName)
+  await settle()
+  tree = cards()
+  ok('permission ' + prefix + ' keeps uploading', uploads.length === uploadsBefore + 1 && localCalls.length === localsBefore, { uploads, localCalls })
+  ok('permission ' + prefix + ' renders no local badge', !textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+  await closeCard()
+}
+
+// ---- 10: a refused local reference falls back to uploading the bytes -------
+currentPermission = 'danger-full-access'
+hostPaths.set('fallback.txt', '/home/user/originals/fallback.txt')
+localFails = true
+const uploadsBeforeFallback = uploads.length
+reply = { ok: true, path: '/u/fallback.txt', size: 12, dedup: false }
+await pick('fallback.txt')
+await settle()
+tree = cards()
+ok('a refused local reference falls back to upload', uploads.length === uploadsBeforeFallback + 1, uploads)
+ok('the fallback card is not marked local', !textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+ok('the fallback card keeps the trash action', byClass(tree, 'dfu-chip-delete').length === 1)
+await closeCard()
+localFails = false
+
+// ---- 11: delete-all never deletes a local original -------------------------
+currentPermission = 'danger-full-access'
+hostPaths.set('local-del.txt', '/home/user/originals/local-del.txt')
+await pick('local-del.txt')
+await settle()
+currentPermission = 'workspace-write'
+reply = { ok: true, path: '/u/normal-del.txt', size: 12, dedup: false }
+await pick('normal-del.txt')
+await settle()
+tree = cards()
+ok('the local and uploaded cards coexist', byClass(tree, 'dfu-chip').length === 2, byClass(tree, 'dfu-chip').length)
+;(findAction(dicts.zh.deleteAllCards)!.props!.onClick as () => void)()
+tree = cards()
+ok('delete-all ignores the local reference in its count', textOf(tree).includes('永久删除 1 个文件？'), textOf(tree))
+;(findAction(dicts.zh.deleteAllConfirm)!.props!.onClick as () => void)()
+await settle()
+tree = cards()
+ok('delete-all drops both cards', tree === null, tree)
+ok('delete-all deletes the uploaded file', deletes.some((d) => d.path === '/u/normal-del.txt'), deletes)
+ok('delete-all never deletes a local original', !deletes.some((d) => d.path === '/home/user/originals/local-del.txt'), deletes)
+ok('delete-all un-references the local card', removes.some((r) => r.path === '/home/user/originals/local-del.txt'), removes)
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

@@ -17,7 +17,7 @@ import {
 import { once } from 'node:events'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ServerResponse } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHostCore, errCode, errMsg } from './core/host.js'
 import type {
   AttachmentsService, LlmService, PluginContext, PreStepDecision, PreStepPayload, WebServer,
@@ -162,7 +162,8 @@ export function apply(ctx: PluginContext): void {
     },
     statPath: async (absPath) => {
       try {
-        return existsSync(absPath) ? { size: statSync(absPath).size } : null
+        const st = statSync(absPath)
+        return { size: st.size, isFile: st.isFile() }
       } catch {
         return null
       }
@@ -339,6 +340,72 @@ export function apply(ctx: PluginContext): void {
       }
     },
   }), 'dfu: delete route (permanent)')
+
+  // --- local-reference route: Desktop same-machine files, no upload --------
+  // The Desktop shell resolves a picked file's real absolute path; with the
+  // session running full access the composer registers it here instead of
+  // uploading bytes. Only loopback callers may use it: the path belongs to the
+  // same machine as the host (a remote page could name paths it cannot see).
+  // The host stats the file, never copies it, and never deletes it.
+
+  const isLoopbackRequest = (req: IncomingMessage): boolean => {
+    const address = req.socket && req.socket.remoteAddress ? String(req.socket.remoteAddress) : ''
+    return address === '' || address === '::1' || address === '::ffff:127.0.0.1' || address === '127.0.0.1'
+  }
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/dsh-web-file-uploader/local',
+    handler: async (req, res) => {
+      try {
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        if (!isLoopbackRequest(req)) {
+          sendJson(res, 403, { ok: false, error: 'local references are only available from the host machine' })
+          return
+        }
+        let body = ''
+        for await (const chunk of req) body += chunk
+        let parsed: Record<string, unknown> = {}
+        try {
+          parsed = JSON.parse(body || '{}')
+        } catch {
+          parsed = {}
+        }
+        const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+        if (!sessionId) {
+          sendJson(res, 400, { ok: false, error: 'missing session' })
+          return
+        }
+        const cards: Array<{ id?: string; name?: string; mime?: string; size?: number; path: string }> = []
+        const rawCards = Array.isArray(parsed.cards) ? parsed.cards : []
+        for (const raw of rawCards) {
+          if (!raw || typeof raw !== 'object') continue
+          const item = raw as Record<string, unknown>
+          const cardPath = typeof item.path === 'string' ? item.path : ''
+          if (!cardPath) continue
+          cards.push({
+            id: typeof item.id === 'string' && item.id !== '' ? item.id : undefined,
+            name: typeof item.name === 'string' ? item.name : undefined,
+            mime: typeof item.mime === 'string' ? item.mime : undefined,
+            size: Number.isFinite(Number(item.size)) ? Number(item.size) : undefined,
+            path: cardPath,
+          })
+        }
+        if (cards.length === 0) {
+          sendJson(res, 400, { ok: false, error: 'no cards given' })
+          return
+        }
+        const result = await core.registerLocal({ sessionId, cards })
+        sendJson(res, result.ok ? 200 : 400, result)
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: errMsg(err) })
+      }
+    },
+  }), 'dfu: local-reference route')
 
   // --- list / delete-many routes: the settings "manage files" panel ---------
 

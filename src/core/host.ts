@@ -8,7 +8,7 @@
 //   ensureDir(absDir) -> Promise<void>                  create the upload dir
 //   hashFile(absPath) -> Promise<string|null>           SHA-256 of a file on disk
 //   moveFile(from, to) -> Promise<{ ok: boolean; error?: string }>  publish a staged file
-//   statPath(absPath) -> Promise<{ size?: number } | null>
+//   statPath(absPath) -> Promise<{ size?: number; isFile?: boolean } | null>
 //   readBytes(absPath, maxBytes?, signal?) -> Promise<Uint8Array | null>
 //   readTextFile(absPath) -> Promise<string | null>
 //   writeTextFile(absPath, content) -> Promise<void>
@@ -21,11 +21,12 @@
 //   probe(line) -> void                                  diagnostics (no-op in release)
 //   log(...args) -> void
 //
-// Returns { beginStream, commitStream, abortStream, remove, delete, collect,
-//           preStep }:
+// Returns { beginStream, commitStream, abortStream, registerLocal, remove,
+//           delete, collect, preStep }:
 //   beginStream(args)  -> { ok, id, tempPath }               staged streaming intake
 //   commitStream(args) -> { ok, name, path, size, dedup? }    publish the staged file
 //   abortStream(args)  -> { ok }                              drop the staged file
+//   registerLocal(args) -> { ok, results }                    reference original paths (no upload)
 //   remove(args)   -> { ok }                                 (un-inject only, keep file)
 //   delete(args)   -> { ok, removed:boolean, reason?, path? }(permanent deletion)
 //   collect()      -> runs a lazy TTL sweep over every upload root
@@ -61,7 +62,7 @@ export const errCode = (e: unknown): string | undefined =>
 /** Environment interactions the host core needs, injected by the seam. */
 export interface HostCoreDeps {
   uploadsRoot(sessionId?: string): Promise<string>
-  statPath(absPath: string): Promise<{ size?: number } | null>
+  statPath(absPath: string): Promise<{ size?: number; isFile?: boolean } | null>
   readTextFile(absPath: string): Promise<string | null>
   writeTextFile(absPath: string, content: string): Promise<void>
   ensureDir?(absDir: string): Promise<void>
@@ -95,6 +96,10 @@ export interface PendingEntry {
   abs: string
   /** True when this upload reused an existing (shared) copy. */
   dedup?: boolean
+  /** True when this reference points at the file's own absolute path: nothing
+   *  was uploaded or copied. Grouped and injected like a dedup reference, but
+   *  the host never owns (or deletes) the file. */
+  local?: boolean
 }
 
 /** `.dfu-index.json` maps content hash -> { path, at } (at = upload epoch ms). */
@@ -192,6 +197,37 @@ export interface CommitStreamArgs {
   sha256?: string
 }
 
+/** One file the composer registered as a local (no-upload) reference. */
+export interface LocalRefCard {
+  /** Composer card id; the remove/delete handle. */
+  id?: string
+  name?: string
+  mime?: string
+  size?: number
+  /** Absolute path of the original file on the host machine. */
+  path: string
+}
+
+export interface LocalRefArgs {
+  sessionId?: string
+  cards?: LocalRefCard[]
+}
+
+export interface LocalRefRow {
+  ok: boolean
+  name?: string
+  path?: string
+  size?: number
+  local?: boolean
+  error?: string
+}
+
+export interface LocalRefResult {
+  ok: boolean
+  results: LocalRefRow[]
+  error?: string
+}
+
 export interface PathArgs {
   sessionId?: string
   /** Composer card id; preferred over `path`, which can go stale after a fold. */
@@ -208,6 +244,7 @@ export interface HostCore {
   beginStream(args: BeginStreamArgs): Promise<BeginStreamResult>
   commitStream(args: CommitStreamArgs): Promise<UploadResult>
   abortStream(args: { id: string }): Promise<{ ok: boolean }>
+  registerLocal(args: LocalRefArgs): Promise<LocalRefResult>
   remove(args: PathArgs): Promise<{ ok: boolean; error?: string }>
   delete(args: PathArgs): Promise<DeleteResult>
   list(): Promise<ListResult>
@@ -273,6 +310,11 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     return n
   }
 
+  // Absolute-path test without importing node:path (the core stays
+  // transport-agnostic): POSIX root, Windows drive root, or a UNC share.
+  const isAbsolutePath = (p: string): boolean =>
+    p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\')
+
   const indexPath = (uploadsDir: string): string => uploadsDir + '/.dfu-index.json'
 
   // .dfu-index.json maps hash -> { path, at } (at = upload epoch ms).
@@ -309,7 +351,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
 
   // --- pending bookkeeping -----------------------------------------------------
 
-  function registerPending(sessionId: string | undefined, entry: { id?: string; name: string; mime: string; size: number; abs: string; dedup?: boolean }): void {
+  function registerPending(sessionId: string | undefined, entry: { id?: string; name: string; mime: string; size: number; abs: string; dedup?: boolean; local?: boolean }): void {
     if (!sessionId) return
     let row = pending.get(sessionId)
     if (!row) {
@@ -326,6 +368,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       size: entry.size,
       abs: entry.abs,
       dedup: entry.dedup === true,
+      local: entry.local === true,
     })
   }
 
@@ -453,6 +496,52 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       // non-fatal
     }
     return { ok: true, name, path: abs, size, dedup: false }
+  }
+
+  // --- local references (no upload) ----------------------------------------------
+  // The Desktop shell can resolve a picked file's real absolute path. When the
+  // session runs with full access the composer registers that path directly:
+  // nothing is copied into uploads/, no hash/index entry is written, and TTL/GC
+  // never touches it (the host does not own the file). The reference joins the
+  // existing-file (dedup) group for injection and send-time folding.
+
+  async function registerLocal(args: LocalRefArgs): Promise<LocalRefResult> {
+    const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
+    const cards = args && Array.isArray(args.cards) ? args.cards : []
+    if (!sessionId) return { ok: false, results: [], error: 'missing sessionId' }
+    if (cards.length === 0) return { ok: false, results: [], error: 'missing cards' }
+    const results: LocalRefRow[] = []
+    for (const card of cards) {
+      const rawPath = card && typeof card.path === 'string' ? card.path : ''
+      try {
+        if (!rawPath || !isAbsolutePath(rawPath)) {
+          results.push({ ok: false, path: rawPath, error: 'path must be absolute' })
+          continue
+        }
+        const info = await deps.statPath(rawPath)
+        if (!info || info.isFile === false) {
+          results.push({ ok: false, path: rawPath, error: 'not a file' })
+          continue
+        }
+        const name = sanitizeName(card.name || rawPath.slice(rawPath.lastIndexOf('/') + 1) || rawPath)
+        if (!name) {
+          results.push({ ok: false, path: rawPath, error: 'invalid file name' })
+          continue
+        }
+        const declared = Number(card.size)
+        const size = info.size !== undefined && Number.isFinite(info.size) && info.size >= 0
+          ? info.size
+          : Number.isFinite(declared) && declared > 0 ? declared : 0
+        const mime = card && typeof card.mime === 'string' ? card.mime : ''
+        const cardId = card && typeof card.id === 'string' && card.id !== '' ? card.id : undefined
+        registerPending(sessionId, { id: cardId, name, mime, size, abs: rawPath, local: true })
+        probe('LOCAL sid=' + sessionId + ' path=' + rawPath + ' bytes=' + size)
+        results.push({ ok: true, name, path: rawPath, size, local: true })
+      } catch (err) {
+        results.push({ ok: false, path: rawPath, error: errMsg(err) })
+      }
+    }
+    return { ok: results.every((r) => r.ok), results }
   }
 
   // --- streaming intake ------------------------------------------------------
@@ -654,15 +743,29 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     //    Prefer the card id: a fold may have moved the file, making the client's
     //    path stale while the pending entry knows the current location.
     let releasedById = false
+    let localEntry: PendingEntry | undefined
     if (cardId) {
       const row = pending.get(sessionId)
       const entry = row ? row.find((e) => e.id === cardId) : undefined
-      if (entry) path = entry.abs
+      if (entry) {
+        path = entry.abs
+        if (entry.local === true) localEntry = entry
+      }
       releasedById = dropPendingRefById(sessionId, cardId)
     }
-    if (!releasedById && path) releaseRef(sessionId, path)
-    else if (releasedById) maybeUnfold(sessionId)
+    if (!releasedById && path) {
+      const row = pending.get(sessionId)
+      const entry = row ? row.find((e) => e.abs === path) : undefined
+      if (entry && entry.local === true) localEntry = entry
+      releaseRef(sessionId, path)
+    } else if (releasedById) maybeUnfold(sessionId)
     if (!path) return { ok: false, error: 'missing sessionId or path' }
+    // A local reference is the user's own file: the host only drops the
+    // reference and never deletes it.
+    if (localEntry) {
+      probe('DELETE-LOCAL sid=' + sessionId + ' path=' + path)
+      return { ok: true, removed: false, reason: 'local-reference', path }
+    }
     probe('DELETE-SESSION sid=' + sessionId + ' path=' + path + ' byId=' + (releasedById ? 1 : 0))
 
     // 2) Cross-session safety: another live session still references it -> keep file.
@@ -1243,8 +1346,8 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         entry.size <= limits.maxImageBytes && !!deps.saveImage && !!deps.readBytes
 
       const countables = row.filter((entry) => !nativeImage(entry))
-      const newGroup = countables.filter((entry) => entry.dedup !== true)
-      const existingGroup = countables.filter((entry) => entry.dedup === true)
+      const newGroup = countables.filter((entry) => entry.dedup !== true && entry.local !== true)
+      const existingGroup = countables.filter((entry) => entry.dedup === true || entry.local === true)
       const threshold = foldThreshold()
       let state = folds.get(sid)
       if (newGroup.length > 0 && ((state && state.newFolder) || newGroup.length >= threshold)) {
@@ -1279,14 +1382,14 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
           }
         }
         // The folded existing group is represented by its paths.txt alone.
-        if (state && state.existingFolder && entry.dedup === true) continue
+        if (state && state.existingFolder && (entry.dedup === true || entry.local === true)) continue
         pathLines.push('- ' + entry.abs)
       }
       if (filesInFolder.size > 0 && state && state.newFolder) {
         folderLines.push('- ' + state.newFolder + '/ \u2014 ' + filesInFolder.size + ' uploaded files in this folder; list it with your tools.')
       }
       if (state && state.existingFolder && existingGroup.length > 0) {
-        folderLines.push('- ' + state.existingFolder + '/paths.txt \u2014 one uploaded file path per line.')
+        folderLines.push('- ' + state.existingFolder + '/paths.txt \u2014 one file path per line.')
       }
       const lines = folderLines.concat(pathLines)
 
@@ -1316,6 +1419,9 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     beginStream,
     commitStream: (args) => enqueue(() => commitStream(args)),
     abortStream,
+    // Registering a local reference only touches the pending bookkeeping and
+    // stats the original file; it never writes into uploads/.
+    registerLocal: (args) => enqueue(() => registerLocal(args)),
     remove,
     delete: (args) => enqueue(() => deleteFile(args)),
     // Listing only reads; deleting goes through the queue so it cannot race an

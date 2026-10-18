@@ -183,6 +183,33 @@ race in-flight writes; no background task is required.
 Files whose timestamp is unknown (legacy index entries) are never auto-removed,
 protecting pre-existing uploads from being deleted on migration.
 
+### Local references (Desktop, full access)
+
+The DSH Desktop shell can report each picked file's real absolute path. When the
+current session runs with **full access** (`danger-full-access`) or **auto
+review** (`auto`, which also runs without a sandbox), the plugin registers that
+absolute path instead of uploading bytes: the card is marked **Local** and the
+file is referenced in place. The reference is handled exactly like the existing
+(dedup) file group:
+
+- Nothing is copied into `~/.dsh/uploads/`; no dedup index entry is written and
+  TTL/GC never touches the file — the host does not own it.
+- The card only un-references (`×`); its trash action is hidden and "Delete all"
+  skips it, so this plugin never deletes the original.
+- A local group folds at the send-time threshold into
+  `YYYY-MM-DD-hh-mm-ss-existing/paths.txt` listing the original absolute paths;
+  before folding the paths are injected one per line. Under a multimodal model a
+  local image still becomes a native image block — the host reads the original
+  file, the client uploads nothing.
+- Every other permission mode (`workspace-write`, `read-only`, `custom`, or an
+  unknown/missing value on a new session) keeps uploading. The permission is
+  read when files are picked, so a mid-session switch applies to the next pick;
+  already uploaded cards are never converted.
+- A served web page cannot see host paths (browser File API limitation), so the
+  web UI always uploads. The feature is Desktop-only by construction.
+- If a path cannot be registered (moved, not a regular file, route unreachable),
+  the card falls back to a normal upload so the pick is not lost.
+
 ### Composer button & replacing the official add-file entry
 
 The composer tool row reads `[+ add] [this plugin's paperclip] [mode chips]`.
@@ -331,6 +358,8 @@ conversation.input.left                   webServer route POST /upload
   └ paperclip ── File (body) ────────────► stage .dfu-tmp-*, incremental SHA-256
                                             commit: dedup → name → move → .dfu-index.json
                                             $DSH_HOME/uploads
+                                          webServer route POST /local (Desktop, full access)
+                                            └ original absolute path, no copy (loopback only)
 ui-commands (+ / slash menu)
   └ attach-file row (when replaced) ── opens the same picker
 conversation.input.dock                   remove route (keep file)
@@ -340,6 +369,9 @@ conversation.input.dock                   remove route (keep file)
                                            lazy TTL sweep (upload / delete / start)
                                               └ remove files past TTL, not in pending
                                           agent/pre-step waterfall
+                                             ├ fold a group at the threshold
+                                             │   (new files → timestamp folder;
+                                             │    existing/local refs → paths.txt)
                                              ├ resolveModelInfo → multimodal?
                                              ├ attachments.saveImage → ImageBlock
                                              └ path text block (user messages only)

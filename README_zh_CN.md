@@ -91,6 +91,17 @@ Read the files or use tools to analyse (like vision tools), then answer the user
 - **发送时折叠阈值**（设置 → 文件上传，范围 2–100，默认 100）：发送消息时，卡片区里的「新增文件」组或「已有文件（去重复用）」组各自达到该数量，就为该组折叠注入上下文——新增文件移入 `uploads/YYYY-MM-DD-hh-mm-ss/`，已有文件组生成 `YYYY-MM-DD-hh-mm-ss-existing/paths.txt`，注入的 `[Attached files]` 文本块改为指向目录 / paths.txt，而不是逐条列出路径。走原生 image block 注入的图片不参与计数、也不会折叠。之后再次发送会复用同一目录；卡片区清空后文件会移回上传根目录（启动时的清扫也会解包上次运行留下的折叠目录）。
 - **配置**：在 **设置 → 文件上传**（DSH 原生设置面板；该选项卡带专属回形针图标，与输入框按钮同为斜 45° 的同一枚图标，不会和其他插件的齿轮图标混淆）中，保留期输入框、最大文件数与折叠阈值两个步进器、以及两个上传入口开关（「替代官方添加文件入口」「始终显示单独的附件上传按钮」）共用同一个保存按钮。插件将五项写入 `~/.dsh/dsh-web-file-uploader.json`（`{ ttl, replaceOfficial, alwaysShowButton, maxFiles, foldThreshold }`），且按字段合并更新——保存一项不会清掉其他项。环境变量 `DSH_UPLOAD_TTL`（如 `DSH_UPLOAD_TTL=30m`）作为兜底在默认值之前生效。
 
+### 本地引用（Desktop + 完全权限）
+
+DSH Desktop 外壳能提供所选文件的真实绝对路径。当会话权限为**完全权限**（`danger-full-access`）或**自动审查**（`auto`，同样无沙箱运行）时，插件不再上传字节，而是直接登记该绝对路径：卡片带「本地」标记，文件原地被引用。处理方式与「已有文件（去重复用）」组完全一致：
+
+- 不向 `~/.dsh/uploads/` 复制任何文件，不写入去重索引；TTL 自动清理也不会碰它——这个文件不归宿主所有。
+- 卡片只提供 `×` 解除引用；垃圾桶按钮隐藏、「全部删除」会跳过它，插件永远不会删除原文件。
+- 达到发送时折叠阈值时，本地组会折叠为 `YYYY-MM-DD-hh-mm-ss-existing/paths.txt`，内容为原始绝对路径；未折叠时逐条注入路径。多模态模型下本地图片仍转为原生 image block——宿主读取原文件，客户端零上传。
+- 其余权限（`workspace-write`、`read-only`、`custom`，或新会话尚未拿到投影时的未知值）继续走上传通道。权限在**选择文件时**读取，会话内切换权限只影响下一次选择；已上传的卡片不会回溯转换。
+- 浏览器里的 web 页面拿不到宿主绝对路径（浏览器 File API 限制），因此 web 前端始终上传；该功能天然仅在 Desktop 生效。
+- 若路径登记被拒绝（文件被移动、不是普通文件、路由不可达），卡片会自动回退为正常上传，避免丢文件。
+
 ### 输入框按钮的位置与「替代官方添加文件入口」
 
 输入框工具行依次是：「＋」添加按钮 → 插件回形针按钮 → 权限/模式按钮。本插件按钮被放在**「＋」按钮右侧、权限/模式按钮之前**。整个过程不搬动任何 React 拥有的节点：shell 的插槽容器是 `display: contents`，因此用 flex `order` 重排行即可——插件按钮为 1，shell 在「＋」之后绘制的内容为 2。
@@ -190,6 +201,8 @@ conversation.input.left                   webServer 路由 POST /upload
   └ 回形针 ── File（请求体）─────────────► 先写 .dfu-tmp-*，同一遍增量 SHA-256
                                             提交：去重 → 定名 → 移入 → .dfu-index.json
                                             $DSH_HOME/uploads
+                                          webServer 路由 POST /local（Desktop、完全权限）
+                                            └ 原始绝对路径，不复制（仅 loopback）
 ui-commands（＋ / 斜杠菜单）
   └ attach-file 行（替代开启时）── 打开同一个文件选择器
 conversation.input.dock                   remove 路由（保留文件）
@@ -199,6 +212,9 @@ conversation.input.dock                   remove 路由（保留文件）
                                            懒 TTL 回收（上传 / 删除 / 启动）
                                               └ 删除超 TTL 且不在 pending 中的文件
                                            agent/pre-step 瀑布
+                                              ├ 组达到阈值时折叠
+                                              │   （新增文件 → 时间戳目录；
+                                              │    已有/本地引用 → paths.txt）
                                               ├ resolveModelInfo → 是否多模态？
                                               ├ attachments.saveImage → ImageBlock
                                               └ 路径文本块（仅用户消息）
