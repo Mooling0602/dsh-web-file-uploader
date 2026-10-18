@@ -166,7 +166,9 @@ picks up the `v` prefix. The workflow then:
 5. creates a **GitHub Release** titled `v<version>` whose body is the composed
    notes, with the tarball attached. Any semver prerelease
    (`-alpha.N`, `-beta.N`, `-rc.N`, ...) is flagged as a **pre-release**; a
-   final `X.Y.Z` release is marked latest;
+   final `X.Y.Z` release is marked latest. From `1.0.0-rc.1` on the repository
+   enables **immutable releases**, so a published release's tag and assets are
+   locked (see [Immutable releases](#immutable-releases));
 6. publishes the package to npm through OIDC trusted publishing when the
    `NPM_PUBLISH_ENABLED` repository variable is `true` — this repository
    stores no npm token; prereleases use `--tag next` so `latest` keeps pointing
@@ -182,11 +184,43 @@ Preview the composed notes locally before tagging:
 node scripts/release-notes.ts 1.0.0-alpha.3
 ```
 
-Re-running a failed workflow is safe: an existing GitHub Release gets its
-title, tarball, and notes refreshed, and an already-published npm version is
-skipped. This applies to tags that carry the `## Header` / `## Endfix` format;
-a tag from before that format change fails the compose step, so cut a new
-version instead of re-running its release.
+Re-running a failed workflow is safe: an existing GitHub Release gets its title
+and notes refreshed, and an already-published npm version is skipped. When that
+release is **immutable** its assets are locked, so the rerun keeps the published
+tarball (never replaces an asset) and the summary reports
+`existing immutable (assets kept)`. This applies to tags that carry the
+`## Header` / `## Endfix` format; a tag from before that format change fails the
+compose step, so cut a new version instead of re-running its release.
+
+### Immutable releases
+
+From **`1.0.0-rc.1`** on, the repository enables GitHub's
+[immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+(repository Settings → General → Releases → *Enable release immutability*; the
+setting can also be made at the organization level). Once enabled, every new
+release — including pre-releases — locks its assets and its tag to the released
+commit, and GitHub generates a release attestation covering the tag, the commit
+SHA and the shipped assets.
+
+- **Locked:** release assets cannot be modified or deleted; the tag cannot be
+  moved or deleted, and its name cannot be reused after the release is deleted.
+- **Still editable:** title, release notes, and the pre-release / latest flags.
+- **Repair policy:** never replace a published asset. If a published release is
+  broken, bump the version and cut a new release; the workflow fails with a
+  clear message when an immutable release is missing its tarball.
+- **Rerun behavior:** creating a release attaches the tarball in the same step,
+  so the first run already ships assets before publication; a rerun on an
+  immutable release keeps the assets and refreshes only the title and notes.
+  The run summary carries a `release immutable` row.
+
+Releases cut before the setting was enabled (`1.0.0-alpha.5` and earlier) stay
+mutable; only releases published after enabling are immutable.
+
+Verify one release:
+
+```bash
+gh api repos/Mooling0602/dsh-web-file-uploader/releases/tags/1.0.0-rc.1 --jq '.immutable'
+```
 
 ### npm publishing (OIDC trusted publishing)
 

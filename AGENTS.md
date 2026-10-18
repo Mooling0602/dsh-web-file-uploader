@@ -187,6 +187,11 @@ writes it. Agents must not invent release entries:
 - The GitHub Release title keeps the `v` prefix: `v1.0.0-alpha.3`.
 - Push the release commit and the tag together:
   `git push origin main 1.0.0-alpha.3`.
+- **Immutable releases from `1.0.0-rc.1`.** The repository enables immutable
+  releases (repository setting); a published release's assets and tag are
+  locked. Repair a bad release by bumping the version — never by replacing
+  assets. The release workflow keeps an existing immutable release's assets and
+  only refreshes its title and notes on a rerun.
 
 ## Workflow notes
 

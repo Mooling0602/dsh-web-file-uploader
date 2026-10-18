@@ -238,14 +238,36 @@ jobs:
           prerelease="${{ steps.version.outputs.prerelease }}"
 
           if gh release view "${tag}" > /dev/null 2>&1; then
-            echo "release ${tag} already exists; refreshing its tarball and notes"
-            gh release upload "${tag}" "${tarball}" --clobber
-            if [ "${prerelease}" = "true" ]; then
-              gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --prerelease
+            # A rerun must stay safe after the repository enables immutable
+            # releases: their assets are locked, so only the editable
+            # title/notes/flags are refreshed and the published tarball is kept.
+            immutable="$(gh release view "${tag}" --json isImmutable --jq '.isImmutable')"
+            if [ "${immutable}" = "true" ]; then
+              expected_asset="$(basename "${tarball}")"
+              published_assets="$(gh release view "${tag}" --json assets --jq '.assets[].name')"
+              if ! printf '%s\n' "${published_assets}" | grep -x "${expected_asset}" > /dev/null; then
+                echo "::error::immutable release ${tag} is missing ${expected_asset}; its assets cannot be replaced, so bump the version and publish a new release"
+                exit 1
+              fi
+              echo "release ${tag} is immutable; keeping its assets and refreshing the title and notes"
+              if [ "${prerelease}" = "true" ]; then
+                gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --prerelease
+              else
+                gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --latest
+              fi
+              echo "release_status=existing immutable (assets kept)" >> "${GITHUB_OUTPUT}"
+              echo "release_immutable=true" >> "${GITHUB_OUTPUT}"
             else
-              gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --latest
+              echo "release ${tag} already exists; refreshing its tarball and notes"
+              gh release upload "${tag}" "${tarball}" --clobber
+              if [ "${prerelease}" = "true" ]; then
+                gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --prerelease
+              else
+                gh release edit "${tag}" --title "${release_title}" --notes-file "${notes_file}" --latest
+              fi
+              echo "release_status=updated" >> "${GITHUB_OUTPUT}"
+              echo "release_immutable=${immutable}" >> "${GITHUB_OUTPUT}"
             fi
-            echo "release_status=updated" >> "${GITHUB_OUTPUT}"
           elif [ "${prerelease}" = "true" ]; then
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
@@ -253,6 +275,7 @@ jobs:
               --notes-file "${notes_file}" \
               --prerelease
             echo "release_status=created (pre-release)" >> "${GITHUB_OUTPUT}"
+            echo "release_immutable=$(gh release view "${tag}" --json isImmutable --jq '.isImmutable')" >> "${GITHUB_OUTPUT}"
           else
             gh release create "${tag}" "${tarball}" \
               --verify-tag \
@@ -260,6 +283,7 @@ jobs:
               --notes-file "${notes_file}" \
               --latest
             echo "release_status=created" >> "${GITHUB_OUTPUT}"
+            echo "release_immutable=$(gh release view "${tag}" --json isImmutable --jq '.isImmutable')" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Publish the npm release
@@ -326,6 +350,7 @@ jobs:
             echo "| release notes | \`CHANGELOG.md\` Header + § ${{ steps.version.outputs.version }} + Endfix |"
             echo "| release title | \`v${{ steps.version.outputs.version }}\` |"
             echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
+            echo "| release immutable | \`${{ steps.gh_release.outputs.release_immutable || 'n/a' }}\` |"
             echo "| npm publish | ${{ steps.npm_publish.outputs.npm_status || 'not run' }} |"
             echo "| npm dist-tag | \`${{ steps.version.outputs.npm_dist_tag }}\` |"
             echo "| tarball | \`${{ steps.pack.outputs.tarball }}\` |"
