@@ -9,10 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Keep in sync with release.yml. markdownlint-cli2 requires Node >= 22.
-  MARKDOWNLINT_VERSION: "0.23.3"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,10 +20,8 @@ jobs:
       # commit pushes always run: the head subject alone cannot prove the other
       # commits are docs/chore. Pull requests always run.
       #
-      # The fast path is not completely unchecked: a push that contains a docs
-      # commit and changes CHANGELOG.md still lint-checks that one file, because
-      # a malformed changelog would otherwise surface only at release time. The
-      # same API-driven decision guards the `package.json` full-gate rule.
+      # Nothing else is checked on the fast path: markdownlint is a local,
+      # editor-facing convenience here, not a CI gate (see AGENTS.md).
       - name: Decide whether the full gate is needed
         id: gate
         shell: bash
@@ -36,36 +30,28 @@ jobs:
         run: |
           set -euo pipefail
           run=true
-          lint_changelog=false
-          docs_commits=0
           count="$(jq '(.commits // []) | length' "${GITHUB_EVENT_PATH}")"
 
           subject=""
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ]; then
             subject="$(jq -r '(.head_commit.message // "") | split("\n")[0]' "${GITHUB_EVENT_PATH}")"
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            docs_commits="$(jq -r '[(.commits // [])[] | select(((.message // "") | split("\n")[0]) as $subject | ($subject | startswith("docs:")) or ($subject | startswith("docs(")))] | length' "${GITHUB_EVENT_PATH}")"
-          fi
 
-          # The fast path needs the changed file list for two decisions:
-          # whether the push touches package.json (full gate) and whether it
-          # edits CHANGELOG.md (lint). The Actions push payload carries no
+          # The fast path needs the changed file list to decide whether the push
+          # touches package.json. The Actions push payload carries no
           # added/removed/modified lists (the webhook payload does), so a
-          # single-commit push asks the API. When that call fails the gate
-          # cannot tell, and it runs the checks instead of skipping them,
-          # because skipping is the dangerous direction. `gh api` prints its
-          # error body on stdout, so only a successful call may define the list.
+          # single-commit push asks the API. When that call fails the gate cannot
+          # tell, and it runs the checks instead of skipping them, because
+          # skipping is the dangerous direction. `gh api` prints its error body
+          # on stdout, so only a successful call may define the list.
           fast_path_push=false
           case "${subject}" in
             docs:*|docs\(*|chore:*|chore\(*) fast_path_push=true ;;
           esac
           changed_files=""
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ]; then
-            if [ "${fast_path_push}" = "true" ] || [ "${docs_commits}" -gt 0 ]; then
-              if api_files="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.files[].filename' 2>/dev/null)"; then
-                changed_files="${api_files}"
-              fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ] && [ "${fast_path_push}" = "true" ]; then
+            if api_files="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.files[].filename' 2>/dev/null)"; then
+              changed_files="${api_files}"
             fi
           fi
           changed() {
@@ -79,17 +65,8 @@ jobs:
               run=false
             fi
           fi
-          if [ "${docs_commits}" -gt 0 ]; then
-            # A multi-commit push or an unreadable file list lints too rather
-            # than skipping: both are rare and checking is the safe default.
-            if [ "${count}" -ne 1 ] || [ -z "${changed_files}" ] || changed CHANGELOG.md; then
-              lint_changelog=true
-            fi
-          fi
           echo "run=${run}" >> "${GITHUB_OUTPUT}"
-          echo "lint_changelog=${lint_changelog}" >> "${GITHUB_OUTPUT}"
           echo "full CI required: ${run} (${GITHUB_EVENT_NAME}, ${count} commit(s))"
-          echo "changelog lint required: ${lint_changelog} (docs commit(s) in the push: ${docs_commits})"
           if [ -n "${changed_files}" ]; then
             echo "changed files: $(printf '%s' "${changed_files}" | tr '\n' ' ')"
           else
@@ -97,23 +74,15 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-        if: steps.gate.outputs.run == 'true' || steps.gate.outputs.lint_changelog == 'true'
+        if: steps.gate.outputs.run == 'true'
       - uses: pnpm/action-setup@v4
         if: steps.gate.outputs.run == 'true'
         with:
           version: 12
       - uses: actions/setup-node@v4
-        if: steps.gate.outputs.run == 'true' || steps.gate.outputs.lint_changelog == 'true'
+        if: steps.gate.outputs.run == 'true'
         with:
           node-version: 24
-      # The docs fast path keeps only this check: an edited changelog must pass
-      # markdownlint before the push can finish green.
-      - name: Lint CHANGELOG.md
-        if: steps.gate.outputs.lint_changelog == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}" CHANGELOG.md
       - run: pnpm install
         if: steps.gate.outputs.run == 'true'
       - run: pnpm typecheck

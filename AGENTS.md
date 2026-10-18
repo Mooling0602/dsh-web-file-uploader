@@ -197,14 +197,17 @@ writes it. Agents must not invent release entries:
   locked. Repair a bad release by bumping the version — never by replacing
   assets. The release workflow keeps an existing immutable release's assets and
   only refreshes its title and notes on a rerun.
-- **The changelog is lint-checked twice.** A `docs:` push that edits
-  `CHANGELOG.md` runs markdownlint on that file in CI, and the release workflow
-  lints it again before composing the release body. When the release lint
-  fails, the build and the GitHub Release still ship, but with an **empty
-  body**, and the run is marked failed. Repair it by fixing `CHANGELOG.md` on
-  `main`, then run the manual **release-notes** workflow for that tag: it lints
-  the changelog and rewrites only the release body, so the published assets
-  (immutable ones included) stay untouched.
+- **markdownlint is local-only, not a gate.** No workflow runs markdownlint.
+  `.markdownlint.json` stays in the tree as an editor-facing convenience: run
+  `npx --yes markdownlint-cli2@0.23.3 CHANGELOG.md` by hand if you want the
+  feedback, and ignore editor squiggles — nothing in CI depends on them. The
+  reason is that GitHub does not render Markdown the same way in its file
+  preview and its issue / pull request / discussion / release renderers
+  (different line-break and reflow models), and GitHub has not said which one is
+  canonical, so a lint failure would not describe what actually renders. What
+  does protect a release body is the composer's structural validation (see
+  [Changelog ownership](#changelog-ownership)) plus the soft-wrap joining it
+  performs for the release renderer.
 
 ## Workflow notes
 
@@ -228,6 +231,6 @@ writes it. Agents must not invent release entries:
   checkout/install/typecheck/test/build and finishes green in seconds —
   unless the commit touches `package.json` (version bumps and dependency edits
   always run the full gate). Multi-commit pushes and pull requests always run
-  the full gate. A push that contains a `docs:` commit and changes
-  `CHANGELOG.md` still lint-checks that one file with markdownlint, so a
-  malformed changelog fails before the release workflow sees it.
+  the full gate. A `docs:`-only push has no lint step: markdownlint is local
+  (see [Release conventions](#release-conventions)), and a malformed changelog
+  is caught by the release-note composer when the release is cut.

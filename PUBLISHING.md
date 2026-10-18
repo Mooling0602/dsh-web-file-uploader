@@ -162,11 +162,8 @@ picks up the `v` prefix. The workflow then:
    It joins the soft-wrapped lines of each paragraph, list item and blockquote
    paragraph into one line before publishing: GitHub renders a single newline
    in a release body as a hard line break, so wrapped source would otherwise
-   publish as a narrow column of short lines. It lint-checks `CHANGELOG.md`
-   with markdownlint before composing; a failed
-   lint still ships the build and the GitHub Release, but with an empty body
-   and a failed run (see
-   [Regenerating release notes](#regenerating-release-notes));
+   publish as a narrow column of short lines. markdownlint is **not** run here —
+   see [Markdown linting](#markdown-linting);
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
    build modifies a tracked file (`git status` must stay clean; the generated
    output is git-ignored);
@@ -186,12 +183,10 @@ picks up the `v` prefix. The workflow then:
 7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
-Preview the composed notes and the changelog lint locally before tagging:
+Preview the composed notes locally before tagging:
 
 ```bash
 node scripts/release-notes.ts 1.0.0-alpha.3
-# the same markdownlint check that CI and the release run apply
-npx --yes markdownlint-cli2@0.23.3 CHANGELOG.md
 ```
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its title
@@ -204,13 +199,10 @@ compose step, so cut a new version instead of re-running its release.
 
 ### Regenerating release notes
 
-A markdownlint failure in the release workflow never puts malformed notes into a
-published release: the run still ships the build, the tarball and the GitHub
-Release, but with an **empty body**, and it ends marked failed. Repair it with
-the manual **release-notes** workflow (`.github/workflows/release-notes.yml`):
+A wrong or empty release body is repaired with the manual **release-notes**
+workflow (`.github/workflows/release-notes.yml`):
 
-1. Fix `CHANGELOG.md` on `main` (a `docs:` commit; CI lints it on the way in)
-   and push.
+1. Fix `CHANGELOG.md` on `main` and push.
 2. *Actions → release-notes → Run workflow* with:
    - `tag` — the bare version tag of the release to repair (`1.0.0-rc.1`);
      any published tag works, not only the last one;
@@ -219,15 +211,44 @@ the manual **release-notes** workflow (`.github/workflows/release-notes.yml`):
    - `dry_run` — compose and print the notes without editing the release; dry
      runs also skip the tag/release existence checks, so an unreleased
      version's notes can be previewed.
-3. The workflow validates the tag and the existing release, lints the
-   changelog, composes the body from `CHANGELOG.md` (global `## Header`, the
-   `## <version>` section, global `## Endfix`, and the generated
-   `**Full Changelog**` link) and writes only the GitHub Release body. Assets
-   are never touched, so this also works for immutable releases, whose title and
-   notes stay editable.
+3. The workflow validates the tag and the existing release, composes the body
+   from `CHANGELOG.md` (global `## Header`, the `## <version>` section, global
+   `## Endfix`, and the generated `**Full Changelog**` link) and writes only the
+   GitHub Release body. Assets are never touched, so this also works for
+   immutable releases, whose title and notes stay editable.
 
-A failed lint leaves the release body exactly as it was; the run page shows the
-markdownlint errors to fix.
+A changelog the composer rejects (missing/empty/duplicated version section, a
+broken `## Header` / `## Endfix`, a leftover `hash123`) fails the run before the
+release body is touched, so the published body stays exactly as it was and the
+run page shows the composer's error.
+
+### Markdown linting
+
+markdownlint is **not a CI gate** in this repository, and neither the release
+nor the release-notes workflow runs it. Two reasons:
+
+- GitHub does not render Markdown the same way everywhere: the file preview and
+  the issue / pull request / discussion / release renderers use different line
+  break and reflow models, so a rule tuned to one of them (80-column wrapping in
+  particular) does not describe what a release body renders as. The composer
+  already handles the release renderer: it joins wrapped source lines back into
+  single lines (see [Cutting a release](#cutting-a-release)).
+- GitHub has not specified which renderer is canonical, and the upstream
+  community discussion has had no official answer, so there is no target that
+  lint failures would actually protect.
+
+`.markdownlint.json` stays in the tree as a **local, editor-facing
+convenience**; run it by hand when you want the feedback:
+
+```bash
+npx --yes markdownlint-cli2@0.23.3 CHANGELOG.md
+```
+
+The VS Code extension (`DavidAnson.vscode-markdownlint`) discovers
+`.markdownlint.json` on its own, so no extra editor settings are needed. Its
+squiggles are advisory and can be ignored: nothing in CI or in the release
+pipeline depends on them. Keep the existing config rather than disabling the
+rules, so a manual run stays reproducible when it is wanted.
 
 ### Immutable releases
 

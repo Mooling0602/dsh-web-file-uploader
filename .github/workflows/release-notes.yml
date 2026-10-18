@@ -1,15 +1,14 @@
 # .github/workflows/release-notes.yml — regenerate one release's notes.
 #
-# A markdownlint failure in the release workflow ships the build with an empty
-# release body so a malformed changelog never becomes published notes. This
-# workflow repairs that: fix CHANGELOG.md on main, then run it manually with the
-# tag; it lint-checks the changelog and writes the composed notes back to the
-# GitHub Release body. It works for any published tag, not only the last one,
-# and `ref` accepts any branch or commit, so upcoming notes can be previewed
-# with `dry_run` before a release.
+# Use it to repair a release body: fix CHANGELOG.md on main, then run it
+# manually with the tag; it writes the composed notes back to the GitHub Release
+# body. It works for any published tag, not only the last one, and `ref` accepts
+# any branch or commit, so upcoming notes can be previewed with `dry_run` before
+# a release. markdownlint is not run here: it is a local, editor-facing check in
+# this repository (see AGENTS.md).
 #
 # Notes are composed from the checked-out changelog source (default main), not
-# from the tag's own copy: the fix lands on main after the tag. Build artifacts
+# from the tag's own copy: a fix lands on main after the tag. Build artifacts
 # are never touched — release assets stay exactly as published (immutable
 # releases included, where only the editable title and notes are writable).
 name: release-notes
@@ -41,8 +40,6 @@ concurrency:
 
 env:
   NODE_VERSION: "24"
-  # Keep in sync with ci.yml and release.yml. markdownlint-cli2 needs Node >= 22.
-  MARKDOWNLINT_VERSION: "0.23.3"
 
 jobs:
   notes:
@@ -101,16 +98,6 @@ jobs:
           fi
           echo "release tag: ${tag}; changelog source: ${REF} @ $(git rev-parse --short HEAD)"
 
-      - name: Lint CHANGELOG.md
-        id: changelog_lint
-        shell: bash
-        run: |
-          set -euo pipefail
-          # A malformed changelog must not be published as release notes: fail
-          # before the release body is touched, so a failed run leaves it as is.
-          npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}" CHANGELOG.md
-          echo "::notice::CHANGELOG.md passed markdownlint"
-
       - name: Compose the release notes
         id: notes
         shell: bash
@@ -119,7 +106,9 @@ jobs:
           notes_file="${RUNNER_TEMP}/release-notes.md"
           # The script composes Header + the `## <tag>` section + Endfix and
           # derives the Full Changelog compare link from the nearest previous
-          # release tag (all tags are fetched).
+          # release tag (all tags are fetched). A malformed changelog fails the
+          # step before the release body is touched, so a failed run leaves the
+          # published body as it was.
           node scripts/release-notes.ts "${TAG}" --tag "${TAG}" --output "${notes_file}"
           echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
           echo "--- release notes (CHANGELOG.md Header + ## ${TAG} + Endfix) ---"
@@ -148,7 +137,6 @@ jobs:
             echo "| --- | --- |"
             echo "| release tag | \`${TAG}\` |"
             echo "| changelog source | \`${REF}\` |"
-            echo "| changelog lint | ${{ steps.changelog_lint.outcome }} |"
             echo "| GitHub Release | ${{ steps.update.outputs.release_status || 'not edited' }} |"
             if [ "${DRY_RUN}" = "true" ]; then
               echo ""

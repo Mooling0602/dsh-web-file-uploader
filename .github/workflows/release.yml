@@ -22,13 +22,12 @@
 # installable artifact, so a GitHub Release ships a ready-to-install package
 # without a build step on the user's machine.
 #
-# Before composing the notes, the workflow lint-checks CHANGELOG.md with
-# markdownlint. A changelog that fails the check must not reach a published
-# release body: the build, the tarball and the GitHub Release still ship, but
-# with an empty body, and the run is marked failed at the end. Fix the
-# changelog on main, then use the release-notes workflow to regenerate the body
-# for that tag (this workflow's manual run does the same from main's
-# CHANGELOG.md, as part of a full retry).
+# markdownlint is deliberately not run here or in any other workflow: it is an
+# editor-facing, local-only check in this repository (see AGENTS.md), because
+# GitHub's file preview and its issue / pull request / discussion / release
+# renderers do not share one line-wrap model, so 80-column rules do not describe
+# what actually renders. The composer's structural validation is what guards a
+# release body.
 #
 # See PUBLISHING.md for the release checklist, the npm dist-tag policy and the
 # trusted-publishing setup.
@@ -63,8 +62,6 @@ concurrency:
 env:
   NODE_VERSION: "24"
   PNPM_VERSION: "12"
-  # Keep in sync with ci.yml. markdownlint-cli2 requires Node >= 22.
-  MARKDOWNLINT_VERSION: "0.23.3"
 
 jobs:
   release:
@@ -158,60 +155,29 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "tag ${tag}: version ${version}, channel ${channel}, prerelease=${prerelease}"
 
-      - name: Lint CHANGELOG.md
-        id: changelog_lint
-        shell: bash
-        run: |
-          set -euo pipefail
-          # A manual run validates the changelog it composes: main's copy,
-          # because a fix lands after the tag (origin/main was fetched by the
-          # tag validation step). A tag push validates the tag's own copy.
-          changelog="CHANGELOG.md"
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            changelog="${RUNNER_TEMP}/CHANGELOG.md"
-            git show refs/remotes/origin/main:CHANGELOG.md > "${changelog}"
-          fi
-          echo "changelog=${changelog}" >> "${GITHUB_OUTPUT}"
-          # A malformed changelog must not reach a published release body. The
-          # failure is recorded, not raised: the build and the release still
-          # ship with an empty body, and the final step marks the run failed so
-          # the error cannot go unnoticed.
-          if npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}" "${changelog}"; then
-            echo "lint_ok=true" >> "${GITHUB_OUTPUT}"
-            echo "::notice::CHANGELOG.md passed markdownlint"
-          else
-            echo "lint_ok=false" >> "${GITHUB_OUTPUT}"
-            echo "::warning::CHANGELOG.md failed markdownlint; the release body is left empty"
-          fi
-
       - name: Compose the release notes from CHANGELOG.md
         id: notes
         shell: bash
-        env:
-          CHANGELOG_LINT_OK: ${{ steps.changelog_lint.outputs.lint_ok }}
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           notes_file="${RUNNER_TEMP}/release-notes.md"
           echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
 
-          if [ "${CHANGELOG_LINT_OK}" = "false" ]; then
-            # Keep the invalid changelog out of the published release: the
-            # release ships with an empty body, and a manual run for the same
-            # tag regenerates the notes once the changelog is fixed.
-            : > "${notes_file}"
-            echo "notes_status=empty (CHANGELOG.md failed markdownlint)" >> "${GITHUB_OUTPUT}"
-            echo "::warning::the release body is left empty because CHANGELOG.md failed markdownlint"
-            exit 0
+          # The changelog source: main's copy on a manual run (a fix lands after
+          # the tag; origin/main was fetched by the tag validation step), the
+          # tag's own copy on a tag push.
+          changelog="CHANGELOG.md"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            changelog="${RUNNER_TEMP}/CHANGELOG.md"
+            git show refs/remotes/origin/main:CHANGELOG.md > "${changelog}"
           fi
-
-          # The lint step resolved the changelog source: main's copy on a manual
-          # run (a fix lands after the tag), the tag's own copy on a tag push.
-          changelog="${{ steps.changelog_lint.outputs.changelog }}"
 
           # The script composes Header + the version section + Endfix and turns
           # the Endfix placeholder into the Full Changelog compare link for this
           # tag's nearest previous release tag (full history is checked out).
+          # It fails the step on a missing, empty or duplicated version section,
+          # a broken Header/Endfix and a leftover hash123 placeholder.
           node scripts/release-notes.ts "${version}" --tag "${TAG}" --output "${notes_file}" --changelog "${changelog}"
           echo "notes_status=composed" >> "${GITHUB_OUTPUT}"
           echo "--- release notes (CHANGELOG.md Header + ## ${version} + Endfix) ---"
@@ -401,7 +367,6 @@ jobs:
             echo "| version | \`${{ steps.version.outputs.version }}\` |"
             echo "| channel | \`${{ steps.version.outputs.channel }}\` |"
             echo "| pre-release | \`${{ steps.version.outputs.prerelease }}\` |"
-            echo "| CHANGELOG.md lint | ${{ steps.changelog_lint.outputs.lint_ok || 'not run' }} |"
             echo "| release notes | ${{ steps.notes.outputs.notes_status || 'not run' }} |"
             echo "| release title | \`v${{ steps.version.outputs.version }}\` |"
             echo "| GitHub Release | ${{ steps.gh_release.outputs.release_status || 'not created' }} |"
@@ -422,15 +387,4 @@ jobs:
               echo ""
               echo "> Dry run: no GitHub Release was created and nothing was published."
             fi
-            if [ "${{ steps.changelog_lint.outputs.lint_ok }}" = "false" ]; then
-              echo ""
-              echo "> **CHANGELOG.md failed markdownlint.** The release body is empty. Fix CHANGELOG.md on main, then run *Actions → release-notes → Run workflow* for \`${TAG}\` to regenerate the notes."
-            fi
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Fail the run when CHANGELOG.md failed markdownlint
-        if: steps.changelog_lint.outputs.lint_ok == 'false'
-        shell: bash
-        run: |
-          echo "::error::CHANGELOG.md failed markdownlint; release ${TAG} was published with an empty body. Fix CHANGELOG.md on main, then run the release-notes workflow manually for ${TAG} to regenerate the notes."
-          exit 1
