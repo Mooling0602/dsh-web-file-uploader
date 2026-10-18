@@ -6,6 +6,8 @@
 
 目前支持 web 和桌面端，对 [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 的支持正在计划中。
 
+如果你想了解插件的运行效果，可以在 [画廊](GALLARY_zh_CN.md) 中查看。
+
 ## 功能特性
 
 - 📎 输入框工具行里的回形针按钮：和 DeepSeek 网页聊天内的按钮样式基本一致，回形针旋转 45° 以和官方内置的功能作区分。

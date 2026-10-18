@@ -6,6 +6,8 @@ This is a file-upload plugin developed for [DeepSeek Harness](https://github.com
 
 It currently supports web and desktop; support for [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) is planned.
 
+If you want to see the plugin's running effects, see in [Gallary](GALLARY.md).
+
 ## Features
 
 - 📎 Paperclip button in the composer tool row: its style basically matches the button inside DeepSeek Web Chat, with the paperclip rotated 45° to distinguish it from the official built-in feature.
