@@ -13,6 +13,15 @@
 // release tag and the tag being released. The CI script computes that link
 // instead of a maintainer copying one into the changelog.
 //
+// GitHub renders every single newline in a release body as a hard line break,
+// so publishing the wrapped `CHANGELOG.md` text verbatim would turn each
+// ~80-column source line into its own short line: the notes would render as a
+// narrow column with the rest of the page empty on wide screens. The composer
+// therefore joins the soft-wrapped lines of each paragraph, list item and
+// blockquote paragraph back into one line; blank lines, headings, fenced code,
+// tables and explicit hard breaks are kept as they are, so the changelog itself
+// stays wrapped for readability.
+//
 // It fails when the version section is missing, empty, duplicated, or still
 // contains the template's `hash123` placeholder, when `Header` or `Endfix` is
 // missing or empty, or when the Endfix placeholder is absent.
@@ -120,6 +129,96 @@ const previousReleaseTag = (tag: string): string => {
   }
 }
 
+/** GitHub alert markers (`> [!NOTE]`) must stay on their own line. */
+const ALERT_MARKER_RE = /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$/
+
+/** A line that starts a new Markdown block and must not be joined to the previous line. */
+const BLOCK_START_RE = /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~|<|---\s*$)/
+
+/** Whether `line` continues the paragraph or list item that ended on `previous`. */
+const joinsPrevious = (line: string, previous: string): boolean => {
+  if (BLOCK_START_RE.test(line)) return false
+  // A four-space indent is an indented code block, not a soft-wrapped line.
+  if (/^(?: {4,}|\t)/.test(line)) return false
+  // An explicit hard break (two trailing spaces or a trailing backslash) means
+  // the author wants the line break, so the next line starts a new line.
+  if (/(?: {2,}|\\)$/.test(previous)) return false
+  return true
+}
+
+/**
+ * Join the soft-wrapped lines of one Markdown document, so the GitHub Release
+ * body reflows to the page width instead of publishing every source line as a
+ * hard break. Block structure is preserved: blank lines, headings, list
+ * markers, fenced code, tables and blockquotes keep their own lines.
+ */
+const unwrapSoftWraps = (markdown: string): string => {
+  const lines = markdown.split('\n')
+  const out: string[] = []
+  let buffer: string | null = null
+  const flush = (): void => {
+    if (buffer !== null) {
+      out.push(buffer)
+      buffer = null
+    }
+  }
+  let index = 0
+  while (index < lines.length) {
+    const line = lines[index] as string
+    const previous = index > 0 ? (lines[index - 1] as string) : ''
+    if (line.trim() === '') {
+      flush()
+      out.push('')
+      index++
+      continue
+    }
+    if (/^(?:```|~~~)/.test(line)) {
+      // A fenced code block is copied verbatim through its closing fence.
+      flush()
+      const fence = line.trimStart().slice(0, 3)
+      out.push(line)
+      index++
+      while (index < lines.length) {
+        const code = lines[index] as string
+        out.push(code)
+        index++
+        if (code.trimStart().startsWith(fence)) break
+      }
+      continue
+    }
+    if (/^>/.test(line)) {
+      // Quote the inner text, reflow it recursively, then restore the marker.
+      flush()
+      const quoted: string[] = []
+      while (index < lines.length && /^>/.test(lines[index] as string)) {
+        quoted.push((lines[index] as string).replace(/^>\s?/, ''))
+        index++
+      }
+      let marker: string | null = null
+      if (quoted.length > 0 && ALERT_MARKER_RE.test((quoted[0] as string).trim())) {
+        marker = quoted.shift() as string
+      }
+      const inner = unwrapSoftWraps(quoted.join('\n')).split('\n')
+      if (marker !== null) out.push(`> ${marker}`)
+      for (const innerLine of inner) {
+        out.push(innerLine === '' ? '>' : `> ${innerLine}`)
+      }
+      continue
+    }
+    if (buffer === null) {
+      buffer = line
+    } else if (joinsPrevious(line, previous)) {
+      buffer = `${buffer} ${line.trim()}`
+    } else {
+      flush()
+      buffer = line
+    }
+    index++
+  }
+  flush()
+  return out.join('\n').trim()
+}
+
 /** Replace the Endfix placeholder with the generated Full Changelog link. */
 const withFullChangelog = (endfix: string, repo: string, previous: string, tag: string): string => {
   if (!endfix.includes(FULL_CHANGELOG_TAG)) {
@@ -195,7 +294,7 @@ const main = (): void => {
   const releaseTag = tag ?? version
   const releaseRepo = repo ?? repositoryUrl()
   const previousTag = previous ?? previousReleaseTag(releaseTag)
-  const body = `${header}\n\n${notes}\n\n${withFullChangelog(endfix, releaseRepo, previousTag, releaseTag)}\n`
+  const body = `${unwrapSoftWraps(header)}\n\n${unwrapSoftWraps(notes)}\n\n${withFullChangelog(unwrapSoftWraps(endfix), releaseRepo, previousTag, releaseTag)}\n`
 
   if (output) {
     writeFileSync(output, body)

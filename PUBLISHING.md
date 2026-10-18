@@ -159,7 +159,11 @@ picks up the `v` prefix. The workflow then:
    `## Header` or `## Endfix` is missing or empty, or when the Endfix has no
    `**full_changelog!**` placeholder; the generated body ends with a
    `**Full Changelog**` link covering the previous release tag and this tag.
-   It lint-checks `CHANGELOG.md` with markdownlint before composing; a failed
+   It joins the soft-wrapped lines of each paragraph, list item and blockquote
+   paragraph into one line before publishing: GitHub renders a single newline
+   in a release body as a hard line break, so wrapped source would otherwise
+   publish as a narrow column of short lines. It lint-checks `CHANGELOG.md`
+   with markdownlint before composing; a failed
    lint still ships the build and the GitHub Release, but with an empty body
    and a failed run (see
    [Regenerating release notes](#regenerating-release-notes));

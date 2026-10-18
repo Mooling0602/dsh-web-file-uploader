@@ -162,6 +162,11 @@ writes it. Agents must not invent release entries:
   or duplicated `## <version>` section, a missing or empty `## Header` /
   `## Endfix`, an Endfix without the `**full_changelog!**` placeholder, and any
   remaining `hash123` placeholder.
+- Wrap changelog prose at ~80 columns for readability. GitHub renders a single
+  newline in a release body as a hard line break, so the release-note composer
+  joins each paragraph, list item and blockquote paragraph back into one line
+  before publishing; do not hand-join lines in `CHANGELOG.md`, the source stays
+  wrapped.
 - Keep the format the maintainer uses: an exact `## <version>` heading, `###`
   category groups (for example `### CI/CD`), and bullets that point at the
   commit short hash.

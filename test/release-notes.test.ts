@@ -109,6 +109,45 @@ const level3 = fixture(changelog(`## 1.2.3
 const level3Run = run(['1.2.3', ...notesArgs(level3)])
 ok('keeps deeper headings inside the section', level3Run.status === 0 && level3Run.stdout.includes('#### Settings'), level3Run.stdout)
 
+// --- soft-wrap reflow -------------------------------------------------------
+//
+// GitHub renders a single newline in a release body as a hard line break, so a
+// changelog kept wrapped at ~80 columns must be joined before publishing; block
+// structure (blank lines, headings, alert markers, explicit breaks) must survive.
+
+const wrapped = fixture(changelog(`## 1.2.3
+
+### Features
+
+- Add a thing that is described across
+  two wrapped source lines and keeps
+  going, in commit \`abcdef1\`.
+
+- A second item wrapped across
+  lines too.
+`))
+const wrappedRun = run(['1.2.3', ...notesArgs(wrapped)])
+ok('joins a soft-wrapped list item into one line', wrappedRun.stdout.includes('- Add a thing that is described across two wrapped source lines and keeps going, in commit `abcdef1`.'), wrappedRun.stdout)
+ok('joins every soft-wrapped list item', wrappedRun.stdout.includes('- A second item wrapped across lines too.'), wrappedRun.stdout)
+ok('keeps block structure around joined lines', wrappedRun.stdout.includes('### Features\n\n- ') && wrappedRun.stdout.includes('\n\n- A second item'), wrappedRun.stdout)
+
+const wrappedHeader = fixture(changelog(`## 1.2.3
+
+- Entry.
+`, `> [!NOTE]
+> Copy the attached plugin package link and paste it into
+> dsh's "Add plugin" input field.
+>
+> 复制插件包链接并粘贴到 dsh 的“添加插件”输入框中。`))
+const wrappedHeaderRun = run(['1.2.3', ...notesArgs(wrappedHeader)])
+ok('joins wrapped blockquote paragraphs', wrappedHeaderRun.stdout.includes('> Copy the attached plugin package link and paste it into dsh\'s "Add plugin" input field.'), wrappedHeaderRun.stdout)
+ok('keeps the alert marker on its own line', wrappedHeaderRun.stdout.includes('> [!NOTE]\n'), wrappedHeaderRun.stdout)
+ok('keeps the quoted paragraph separator', wrappedHeaderRun.stdout.includes('input field.\n>\n> 复制'), wrappedHeaderRun.stdout)
+
+const hardBreak = fixture(changelog('## 1.2.3\n\n- First line ends with a hard break.  \n  Second line stays on its own line.\n'))
+const hardBreakRun = run(['1.2.3', ...notesArgs(hardBreak)])
+ok('preserves explicit hard breaks', hardBreakRun.stdout.includes('- First line ends with a hard break.  \n  Second line stays on its own line.'), hardBreakRun.stdout)
+
 // --- failure gates used by the release workflow -----------------------------
 
 const missing = run(['9.9.9', ...notesArgs(basic)])
