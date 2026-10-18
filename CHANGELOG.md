@@ -23,9 +23,10 @@ only generates new version's release note.
 
 ## Header
 
-_**Copy the attached plugin package link and paste to dsh to install or update.**_
-
-_**复制插件包链接到 dsh 中即可更新或安装。**_
+> [!NOTE]
+> Copy the attached plugin package link and paste to dsh to install or update.
+>
+> 复制插件包链接到 dsh 中即可更新或安装。
 
 ## Endfix
 
