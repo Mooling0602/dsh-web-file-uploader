@@ -24,9 +24,10 @@ only generates new version's release note.
 ## Header
 
 > [!NOTE]
-> Copy the attached plugin package link and paste to dsh to install or update.
+> Copy the attached plugin package link and paste it into dsh's "Add plugin"
+> input field to install or update.
 >
-> 复制插件包链接到 dsh 中即可更新或安装。
+> 复制插件包链接并粘贴到 dsh 的“添加插件”输入框中，即可安装或更新。
 
 ## Endfix
 
