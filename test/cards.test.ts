@@ -441,6 +441,11 @@ const localCall = localCalls[localCalls.length - 1]
 ok('the local reference carries the absolute path', localCall.cards[0]?.path === '/home/user/originals/local-note.txt', localCall)
 ok('the local reference carries the session id', localCall.sessionId === S)
 ok('the local card shows the local badge', textOf(tree).includes(dicts.zh.localBadge), textOf(tree))
+// The separator must stay OUTSIDE the badge: the pill's border closes around
+// its children, so a separator child would be drawn inside the pill.
+const localBadgeNode = byClass(tree, 'dfu-chip-local')[0]
+ok('the local badge contains only its label', textOf(localBadgeNode) === dicts.zh.localBadge, textOf(localBadgeNode))
+ok('the local badge keeps the separator outside', textOf(cards()).includes(dicts.zh.localBadge + ' |  · '), textOf(cards()))
 ok('the local card hides the trash action', byClass(tree, 'dfu-chip-delete').length === 0)
 ok('the local card keeps the remove action', byClass(tree, 'dfu-chip-remove').length === 1)
 ok('the local card carries the local hint', byClass(tree, 'dfu-chip')[0].props!.title === dicts.zh.localCardHint, byClass(tree, 'dfu-chip')[0].props!.title)

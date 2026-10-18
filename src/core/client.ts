@@ -961,8 +961,11 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
               'span',
               { className: 'dfu-chip-meta' },
               f.local === true
-                ? react.createElement('span', { className: 'dfu-chip-local', title: tFn('localCardHint') }, tFn('localBadge'), ' · ')
+                ? react.createElement('span', { className: 'dfu-chip-local', title: tFn('localCardHint') }, tFn('localBadge'))
                 : null,
+              // The separator stays outside the badge, or the badge's border
+              // would close around it (one dangling dot inside the pill).
+              f.local === true ? ' · ' : null,
               formatSize(f.size),
               ' · ',
               statusNode,
