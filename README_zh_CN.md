@@ -164,18 +164,13 @@ npm 渠道从首次手动发布开始提供（见 `PUBLISHING.md`）；在那之
 
 仓库**只提交源码**：`lib/` 与 `client/src/client.js` 是 git 忽略的构建产物，由 `pnpm build`（以及安装时运行的 `prepare` 脚本）生成。刚从 clone 出来的目录没有 bundle，因此想要开箱即装的包请用 Release tarball（或 npm）；从 git 安装则需允许 pnpm 执行 `prepare` 脚本。tarball URL 会被钉在 profile 里，跨版本更新需要 `remove` 后再 `add` 新 URL。
 
-> **Git 规格说明**：pnpm 的 git 简写是 `github:<owner>/<repo>`（如
-> `github:Mooling0602/dsh-web-file-uploader`）。裸写 `github.com/<owner>/<repo>`
-> 会被 pnpm 当作*本地目录*，报 "non-existent directory" 警告。其他合法形式：
-> `git+https://github.com/Mooling0602/dsh-web-file-uploader.git` 或
-> `https://github.com/Mooling0602/dsh-web-file-uploader.git`。
+> **Git 规格说明**：pnpm 的 git 简写是 `github:<owner>/<repo>`（如 `github:Mooling0602/dsh-web-file-uploader`）。裸写 `github.com/<owner>/<repo>` 会被 pnpm 当作*本地目录*，报 "non-existent directory" 警告。其他合法形式：`git+https://github.com/Mooling0602/dsh-web-file-uploader.git` 或 `https://github.com/Mooling0602/dsh-web-file-uploader.git`。
 
 重启 dsh web 进程并刷新页面。分发细节与「推送裸版本号标签即自动发布 pre-release」的发布流程见 [PUBLISHING.md](PUBLISHING.md)。
 
 ### 更新
 
-`dsh plugin` 只是把参数转发给 profile 目录下的 pnpm，因此更新也走它（不要手改
-`~/.dsh/profiles/web/node_modules`——下次 pnpm 操作会直接覆盖）：
+`dsh plugin` 只是把参数转发给 profile 目录下的 pnpm，因此更新也走它（不要手改 `~/.dsh/profiles/web/node_modules`——下次 pnpm 操作会直接覆盖）：
 
 ```bash
 # GitHub Release tarball：URL 被钉住，需要换到新版本资源
