@@ -192,6 +192,14 @@ writes it. Agents must not invent release entries:
   locked. Repair a bad release by bumping the version — never by replacing
   assets. The release workflow keeps an existing immutable release's assets and
   only refreshes its title and notes on a rerun.
+- **The changelog is lint-checked twice.** A `docs:` push that edits
+  `CHANGELOG.md` runs markdownlint on that file in CI, and the release workflow
+  lints it again before composing the release body. When the release lint
+  fails, the build and the GitHub Release still ship, but with an **empty
+  body**, and the run is marked failed. Repair it by fixing `CHANGELOG.md` on
+  `main`, then run the manual **release-notes** workflow for that tag: it lints
+  the changelog and rewrites only the release body, so the published assets
+  (immutable ones included) stay untouched.
 
 ## Workflow notes
 
@@ -215,4 +223,6 @@ writes it. Agents must not invent release entries:
   checkout/install/typecheck/test/build and finishes green in seconds —
   unless the commit touches `package.json` (version bumps and dependency edits
   always run the full gate). Multi-commit pushes and pull requests always run
-  the full gate.
+  the full gate. A push that contains a `docs:` commit and changes
+  `CHANGELOG.md` still lint-checks that one file with markdownlint, so a
+  malformed changelog fails before the release workflow sees it.

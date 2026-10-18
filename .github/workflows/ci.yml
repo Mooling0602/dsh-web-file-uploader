@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Keep in sync with release.yml. markdownlint-cli2 requires Node >= 22.
+  MARKDOWNLINT_VERSION: "0.23.3"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,12 +20,18 @@ jobs:
       # A push that touches `package.json` always runs the full gate. Multi-
       # commit pushes always run: the head subject alone cannot prove the other
       # commits are docs/chore. Pull requests always run.
+      #
+      # The fast path is not completely unchecked: a push that contains a docs
+      # commit and changes CHANGELOG.md still lint-checks that one file, because
+      # a malformed changelog would otherwise surface only at release time.
       - name: Decide whether the full gate is needed
         id: gate
         shell: bash
         run: |
           set -euo pipefail
           run=true
+          lint_changelog=false
+          docs_commits=0
           count="$(jq '(.commits // []) | length' "${GITHUB_EVENT_PATH}")"
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${count}" -eq 1 ]; then
             subject="$(jq -r '(.head_commit.message // "") | split("\n")[0]' "${GITHUB_EVENT_PATH}")"
@@ -36,19 +46,36 @@ jobs:
                 ;;
             esac
           fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            docs_commits="$(jq -r '[(.commits // [])[] | select(((.message // "") | split("\n")[0]) as $subject | ($subject | startswith("docs:")) or ($subject | startswith("docs(")))] | length' "${GITHUB_EVENT_PATH}")"
+            changes_changelog="$(jq -r '[(.commits // [])[] | ((.added // []) + (.modified // []))] | flatten | index("CHANGELOG.md") != null' "${GITHUB_EVENT_PATH}")"
+            if [ "${docs_commits}" -gt 0 ] && [ "${changes_changelog}" = "true" ]; then
+              lint_changelog=true
+            fi
+          fi
           echo "run=${run}" >> "${GITHUB_OUTPUT}"
+          echo "lint_changelog=${lint_changelog}" >> "${GITHUB_OUTPUT}"
           echo "full CI required: ${run} (${GITHUB_EVENT_NAME}, ${count} commit(s))"
+          echo "changelog lint required: ${lint_changelog} (docs commit(s) in the push: ${docs_commits})"
 
       - uses: actions/checkout@v4
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' || steps.gate.outputs.lint_changelog == 'true'
       - uses: pnpm/action-setup@v4
         if: steps.gate.outputs.run == 'true'
         with:
           version: 12
       - uses: actions/setup-node@v4
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' || steps.gate.outputs.lint_changelog == 'true'
         with:
           node-version: 24
+      # The docs fast path keeps only this check: an edited changelog must pass
+      # markdownlint before the push can finish green.
+      - name: Lint CHANGELOG.md
+        if: steps.gate.outputs.lint_changelog == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}" CHANGELOG.md
       - run: pnpm install
         if: steps.gate.outputs.run == 'true'
       - run: pnpm typecheck

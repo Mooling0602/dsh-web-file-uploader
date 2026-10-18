@@ -158,7 +158,11 @@ picks up the `v` prefix. The workflow then:
    section is missing, empty, duplicated, or still contains `hash123`, when
    `## Header` or `## Endfix` is missing or empty, or when the Endfix has no
    `**full_changelog!**` placeholder; the generated body ends with a
-   `**Full Changelog**` link covering the previous release tag and this tag;
+   `**Full Changelog**` link covering the previous release tag and this tag.
+   It lint-checks `CHANGELOG.md` with markdownlint before composing; a failed
+   lint still ships the build and the GitHub Release, but with an empty body
+   and a failed run (see
+   [Regenerating release notes](#regenerating-release-notes));
 3. runs the same gate as CI (`typecheck`, `test`, `build`) and fails when the
    build modifies a tracked file (`git status` must stay clean; the generated
    output is git-ignored);
@@ -178,10 +182,12 @@ picks up the `v` prefix. The workflow then:
 7. uploads the tarball as a workflow artifact and writes a summary table to
    the run page.
 
-Preview the composed notes locally before tagging:
+Preview the composed notes and the changelog lint locally before tagging:
 
 ```bash
 node scripts/release-notes.ts 1.0.0-alpha.3
+# the same markdownlint check that CI and the release run apply
+npx --yes markdownlint-cli2@0.23.3 CHANGELOG.md
 ```
 
 Re-running a failed workflow is safe: an existing GitHub Release gets its title
@@ -191,6 +197,33 @@ tarball (never replaces an asset) and the summary reports
 `existing immutable (assets kept)`. This applies to tags that carry the
 `## Header` / `## Endfix` format; a tag from before that format change fails the
 compose step, so cut a new version instead of re-running its release.
+
+### Regenerating release notes
+
+A markdownlint failure in the release workflow never puts malformed notes into a
+published release: the run still ships the build, the tarball and the GitHub
+Release, but with an **empty body**, and it ends marked failed. Repair it with
+the manual **release-notes** workflow (`.github/workflows/release-notes.yml`):
+
+1. Fix `CHANGELOG.md` on `main` (a `docs:` commit; CI lints it on the way in)
+   and push.
+2. *Actions → release-notes → Run workflow* with:
+   - `tag` — the bare version tag of the release to repair (`1.0.0-rc.1`);
+     any published tag works, not only the last one;
+   - `ref` — where the notes are composed from, default `main`; any branch or
+     commit is accepted, so upcoming notes can be previewed;
+   - `dry_run` — compose and print the notes without editing the release; dry
+     runs also skip the tag/release existence checks, so an unreleased
+     version's notes can be previewed.
+3. The workflow validates the tag and the existing release, lints the
+   changelog, composes the body from `CHANGELOG.md` (global `## Header`, the
+   `## <version>` section, global `## Endfix`, and the generated
+   `**Full Changelog**` link) and writes only the GitHub Release body. Assets
+   are never touched, so this also works for immutable releases, whose title and
+   notes stay editable.
+
+A failed lint leaves the release body exactly as it was; the run page shows the
+markdownlint errors to fix.
 
 ### Immutable releases
 
@@ -321,7 +354,11 @@ release that failed midway is retried. The `tag` input takes the bare version
 tag (`1.0.0-alpha.3`); a `v`-prefixed tag is rejected. Set `dry_run: true` to
 run every check, the build and the pack (including the tarball artifact)
 without creating a release or publishing — useful to validate the pipeline or
-a suspicious build.
+a suspicious build. A manual release run composes the notes from
+`CHANGELOG.md` on `main` (not from the tag), so a full retry also repairs an
+empty release body; use the
+[release-notes workflow](#regenerating-release-notes) when only the body needs
+regenerating.
 
 ### Manual publish (debugging only)
 
