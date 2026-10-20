@@ -91,6 +91,7 @@ The composer may reference a picked file by its original absolute path instead o
 ## Workflow notes
 
 - Never commit runtime artifacts (`.dfu-*`, `uploads/`) — see `.gitignore`.
+- A local modification you did not make is the maintainer's own edit: assume that first, rather than treating it as stray state to revert or as a defect to fix. Leave it in place, account for it when reading a diff and commit only what you changed, and ask the maintainer when its purpose is unclear.
 - Before committing, re-read the staged diff and confirm the commit type is accurate (see [Commit types](#commit-types)): correct the type, or split the commit, when it is not.
 - Fix a commit that has not been pushed in place: `git commit --amend` (or a local rebase) may correct its message or content, and the type must be re-checked after the amend. Once a commit is on `origin`, leave it alone — never force-push or otherwise rewrite pushed history.
 - Do not add secrets, tokens, or personal absolute paths (e.g. `/home/<user>/...`) to committed files.

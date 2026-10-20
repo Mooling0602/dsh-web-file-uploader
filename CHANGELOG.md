@@ -17,13 +17,39 @@ Notice that CI is not responsible for editing the old version's release note, it
 ## Header
 
 > [!NOTE]
-> Copy the attached plugin package link and paste it into dsh's "Add plugin" input field to install or update.
+> Copy the attached plugin package link and paste it into dsh's "Add plugin" input field to install or update. Copy the full release-note texts and paste to AI to get the translation for other languages.
 >
-> 复制插件包链接并粘贴到 dsh 的“添加插件”输入框中，即可安装或更新。
+> 复制插件包链接并粘贴到 dsh 的“添加插件”输入框中，即可安装或更新。复制更新日志全文并粘贴给 AI 以获取中文翻译。
 
 ## Endfix
 
 **full_changelog!**
+
+## 1.0.0-rc.2
+
+### Features
+
+- Restore the composer's attachment cards after a page reload: mount pulls the host's live references once per session and rebuilds a card for each, so a reload no longer leaves references that keep injecting with nothing on screen to release them. A row whose stored copy vanished is released instead of drawn, in commit 260b9d7.
+- Ask before a card's permanent delete: the trash button opens a confirmation dialog, because it is the one card action that removes bytes on disk, in commit 43db8ad.
+- Ask before a card's un-reference: the × now confirms too, because dropping the composer's only handle on a file stops it being attached to later messages and a local reference has no other way back, in commit 43db8ad.
+- Skip the transfer when the content is already stored: picking a file hashes it in the page and asks the host first, and a hit references the stored copy without sending a byte. Only this plugin's own index answers, so a miss, an unreadable file or a host without the route uploads as before, in commit 43db8ad.
+
+### Fixes
+
+- Batch "remove all" and "delete all" leave a card still hashing alone, so a batch never discards a pick mid-flight, in commit 43db8ad.
+- Closing a card while it is still hashing no longer falls back to uploading, which would have sent bytes for a card nobody can see and left an orphan reference behind, in commit 43db8ad.
+
+### CI/CD
+
+- Compose release bodies from one line per block: the composer joins the soft-wrapped lines of each paragraph, list item and blockquote paragraph, so notes no longer render as a narrow column with the rest of the page empty, in commit 44ff58b.
+- Stop gating the workflows on markdownlint: GitHub renders Markdown differently in its file preview and its issue, pull request and release renderers, so a lint failure did not describe what actually renders; the config stays in the tree as an editor-facing convenience, in commit aa3a0ba.
+
+### Docs
+
+- Write every tracked Markdown file as one line per paragraph, matching how GitHub reflows a long line, in commit 9c335a5.
+- Simplify both READMEs and add CI, license and Awesome DSH Plugin badges, in commits 0dffdab, 736fb64 and 8ff5740.
+- Add `GALLARY.md` and `GALLARY_zh_CN.md` with plugin interface screenshots for the English and Chinese locales, and link them from the READMEs, in commits e14398d, 61a3929 and 78ae6c5.
+- Refresh `PUBLISHING.md`, in commit ba6a78d.
 
 ## 1.0.0-rc.1
 
