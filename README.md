@@ -2,11 +2,21 @@
 
 > **🌐 Language** · [English](README.md) | [中文（简体）](README_zh_CN.md)
 
+[![CI](https://github.com/Mooling0602/dsh-web-file-uploader/actions/workflows/ci.yml/badge.svg)](https://github.com/Mooling0602/dsh-web-file-uploader/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com/p/Mooling0602/dsh-web-file-uploader/)
+
 This is a file-upload plugin developed for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It adds a [DeepSeek Web Chat](https://chat.deepseek.com) style **paperclip attach button** to the prompt input field, uploads the selected files to the **DSH host machine**, and applies **model-aware adaptation** so the files are actually readable by the running model; it also supports **content-addressed deduplication**.
 
 It currently supports web and desktop; support for [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) is planned.
 
 If you want to see the plugin's running effects, see in [Gallary](GALLARY.md).
+
+> [!WARNING]
+>
+> Recently, because my npm account is still being recovered, I am unable to publish packages. If a package with the same name suddenly appears on npm, please do not download or install it!
+>
+> For distribution sources not supported by this project, use them at your own risk! Please report any security issues related to distribution sources in [Issues](https://github.com/Mooling0602/dsh-web-file-uploader/issues).
 
 ## Features
 
