@@ -147,6 +147,20 @@ const thumbCalls: Array<{ sessionId: string; path: string }> = []
 let pendingRows: Array<Record<string, unknown>> | null = null
 let pendingFails = false
 
+// Instant upload: the composer hashes a picked file locally, then asks the host
+// whether those bytes are already stored. A hit references the copy and no byte
+// is sent. The stub answers from `probeReply` so both branches are covered.
+interface ProbeCall { sessionId?: string; id?: string; name: string; mime?: string; size?: number; sha256: string }
+const probeCalls: ProbeCall[] = []
+const hashCalls: string[] = []
+let probeReply: UploadReply | null = null
+let probeEnabled = false
+let hashEnabled = false
+let hashValue: string | null = 'a'.repeat(64)
+// When set, hashFile parks on a promise so a suite can observe the card while
+// the digest is still being computed.
+let holdHash: { promise: Promise<string | null>; settle: (value: string | null) => void } | null = null
+
 const core = createClientCore({
   react,
   upload: async (args) => {
@@ -173,6 +187,19 @@ const core = createClientCore({
     return '/dsh-web-file-uploader/thumb?session=' + sessionId + '&path=' + encodeURIComponent(path)
   },
   insertStyles: () => {},
+  // Always wired: the feature gates read the current switch at call time, not at
+  // core-construction time, so a suite can flip support on and off between picks.
+  hashFile: async (file: File) => {
+    if (!hashEnabled) return null
+    hashCalls.push(file.name)
+    if (holdHash !== null) return holdHash.promise
+    return hashValue
+  },
+  probe: async (args: ProbeCall) => {
+    if (!probeEnabled) return null
+    probeCalls.push(args)
+    return probeReply as never
+  },
 })
 const ctx = {
   get: (name: string) => (name === 'slots' ? slots : name === 'locale' ? locale : undefined),
@@ -243,20 +270,35 @@ const pickMany = async (files: Array<{ name: string; size: number }>): Promise<v
   const onChange = input.props!.onChange as (event: unknown) => void
   const before = uploads.length
   const beforeLocal = localCalls.length
+  const beforeProbe = probeCalls.length
   onChange({ target: { files: files.map((f) => ({ name: f.name, size: f.size, type: 'text/plain' })), value: '' } })
-  // The picker awaits the config before starting the transport; wait for either
-  // channel (upload or local reference), then let the stubbed replies settle.
-  for (let i = 0; i < 50 && uploads.length === before && localCalls.length === beforeLocal; i += 1) await new Promise((r) => setTimeout(r, 0))
+  // The picker awaits the config before starting the transport; wait for
+  // whichever channel answers (upload, local reference, or the instant-upload
+  // preflight), then let the stubbed replies settle.
+  for (let i = 0; i < 50 && uploads.length === before && localCalls.length === beforeLocal && probeCalls.length === beforeProbe; i += 1) {
+    await new Promise((r) => setTimeout(r, 0))
+  }
   await settle()
 }
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 10; i += 1) await new Promise((r) => setTimeout(r, 0))
+}
+// Closing a card is now two steps: × opens the un-reference question, and the
+// dialog's confirm answer closes it. Most suites want "the card is closed", so
+// this walks both steps; suites that assert on the dialog itself drive the
+// buttons by hand.
+const confirmUnref = async (): Promise<void> => {
+  const tree = cards()
+  const btn = byClass(tree, 'dfu-modal-cancel')[0]
+  ;(btn.props!.onClick as () => void)()
+  await settle()
 }
 const closeCard = async (): Promise<void> => {
   const tree = cards()
   const btn = byClass(tree, 'dfu-chip-remove')[0]
   ;(btn.props!.onClick as () => void)()
   await settle()
+  if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
 }
 const pick = async (name: string): Promise<void> => pickMany([{ name, size: 12 }])
 
@@ -274,13 +316,35 @@ ok('the creating card keeps the remove action', byClass(tree, 'dfu-chip-remove')
 ok('the creating card carries no dedup hint', startChips[0].props!.title === undefined)
 ok('the card shows the saved status', textOf(tree).includes(dicts.zh.saved), textOf(tree))
 
-// Trash calls the host delete RPC for exactly this card's path.
+// Trash asks first: nothing is deleted until the confirmation is answered.
 ;(byClass(tree, 'dfu-chip-delete')[0].props!.onClick as () => void)()
-await new Promise((r) => setTimeout(r, 0))
-ok('trash calls the delete RPC once', deletes.length === 1, deletes)
-ok('trash sends the card path', deletes[0] && deletes[0].path === '/u/shared.txt', deletes)
-ok('trash sends the session id', deletes[0] && deletes[0].sessionId === S, deletes)
-ok('trash sends the stable card id', typeof deletes[0]?.id === 'string' && deletes[0]!.id!.length > 0, deletes)
+await settle()
+ok('trash alone deletes nothing', deletes.length === 0, deletes)
+tree = cards()
+ok('trash opens a confirmation dialog', byClass(tree, 'dfu-modal').length === 1)
+ok('the dialog names the question', textOf(tree).includes(dicts.zh.deleteTitle), textOf(tree))
+ok('the dialog names the file it will delete', textOf(tree).includes('note.txt'), textOf(tree))
+ok('the dialog keeps the card visible underneath', byClass(tree, 'dfu-chip').length === 1)
+ok('the confirmation owns both answers',
+  all(byClass(tree, 'dfu-modal-actions')[0]).filter((n) => n.props?.type === 'button').length === 2,
+  byClass(tree, 'dfu-modal-actions').length)
+// Cancelling leaves both the card and the stored file alone.
+;(byClass(tree, 'dfu-modal-keep')[0].props!.onClick as () => void)()
+await settle()
+ok('cancelling the dialog deletes nothing', deletes.length === 0, deletes)
+tree = cards()
+ok('cancelling closes the dialog', byClass(tree, 'dfu-modal').length === 0)
+ok('cancelling keeps the card', byClass(tree, 'dfu-chip').length === 1)
+// Confirming deletes the file and drops the card.
+;(byClass(tree, 'dfu-chip-delete')[0].props!.onClick as () => void)()
+await settle()
+tree = cards()
+;(byClass(tree, 'dfu-modal-cancel')[0].props!.onClick as () => void)()
+await settle()
+ok('confirming calls the delete RPC once', deletes.length === 1, deletes)
+ok('confirming sends the card path', deletes[0] && deletes[0].path === '/u/shared.txt', deletes)
+ok('confirming sends the session id', deletes[0] && deletes[0].sessionId === S, deletes)
+ok('confirming sends the stable card id', typeof deletes[0]?.id === 'string' && deletes[0]!.id!.length > 0, deletes)
 tree = cards()
 ok('the deleted card is dropped', byClass(tree, 'dfu-chip').length === 0)
 
@@ -301,6 +365,8 @@ ok('no dedup hint leaks into the en card', dicts.zh.dedupCardHint !== dicts.en.d
 
 // × still works on a dedup card: it un-references the copy and drops the card.
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
 await new Promise((r) => setTimeout(r, 0))
 ok('remove on a dedup card calls the remove RPC', removes.some((r) => r.path === '/u/shared.txt'), removes)
 ok('remove sends the stable card id', removes.some((r) => r.path === '/u/shared.txt' && typeof r.id === 'string'), removes)
@@ -322,6 +388,8 @@ ok(
   removes,
 )
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
 await new Promise((r) => setTimeout(r, 0))
 tree = cards()
 ok('the merged card closes like any other', byClass(tree, 'dfu-chip').length === 0)
@@ -333,6 +401,8 @@ tree = cards()
 ok('an unreported dedup flag still offers the trash action', byClass(tree, 'dfu-chip-delete').length === 1)
 ok('an unreported dedup flag carries no hint', byClass(tree, 'dfu-chip')[0].props!.title === undefined)
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
 tree = cards()
 ok('the legacy card closes like any other card', byClass(tree, 'dfu-chip').length === 0)
 
@@ -476,6 +546,8 @@ ok('no local hint leaks into the en card', dicts.zh.localCardHint !== dicts.en.l
 // The remove action only drops the reference; the host never deletes the file.
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
 await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
+await settle()
 ok('removing a local card un-references it', removes.some((r) => r.path === '/home/user/originals/local-note.txt'), removes)
 tree = cards()
 ok('removing the local card drops it', byClass(tree, 'dfu-chip').length === 0)
@@ -507,7 +579,11 @@ ok('the mixed pick keeps both cards', byClass(tree, 'dfu-chip').length === 2, by
 ok('only the path file is marked local', byClass(tree, 'dfu-chip-local').length === 1, byClass(tree, 'dfu-chip-local').length)
 ;(byClass(tree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
 await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
+await settle()
 ;(byClass(cards(), 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+if (byClass(cards(), 'dfu-modal').length > 0) await confirmUnref()
 await settle()
 tree = cards()
 ok('the mixed cards close', tree === null, tree)
@@ -597,6 +673,11 @@ ok('re-rendering does not duplicate the cards', byClass(reloadTree, 'dfu-chip').
 const restoredRemove = byClass(reloadTree, 'dfu-chip-remove')[0]
 ;(restoredRemove.props!.onClick as () => void)()
 await settle()
+// Un-referencing a restored card asks first, like any other card.
+reloadTree = reloaded()
+ok('a restored card asks before it is un-referenced', byClass(reloadTree, 'dfu-modal').length === 1)
+;(byClass(reloadTree, 'dfu-modal-cancel')[0].props!.onClick as () => void)()
+await settle()
 reloadTree = reloaded()
 ok('a restored card can be un-referenced', removes.some((r) => r.path === '/u/reloaded.txt' && r.id === 'r-txt'), removes)
 ok('un-referencing a restored card drops it from the row', byClass(reloadTree, 'dfu-chip').length === 1, byClass(reloadTree, 'dfu-chip').length)
@@ -619,6 +700,246 @@ await settle()
 const downTree = draw(() => cardsSlot.render({ sessionId: S_DOWN }))
 ok('an unreachable host leaves the card area empty', downTree === null, downTree)
 pendingFails = false
+
+// ---- 13: the delete confirmation is a localized second step ---------------
+// The trash can is the only card action that destroys a stored file, so it
+// asks first. Both languages must carry the question, and the safe answer is
+// the one that holds focus.
+for (const key of ['deleteTitle', 'deleteBody', 'deleteKeep', 'deleteConfirm']) {
+  ok('the delete dialog string exists in zh: ' + key, typeof dicts.zh[key] === 'string' && dicts.zh[key].length > 0, dicts.zh[key])
+  ok('the delete dialog string exists in en: ' + key, typeof dicts.en[key] === 'string' && dicts.en[key].length > 0, dicts.en[key])
+}
+// Backdrop click and Escape are the safe branch too: pressing outside a
+// destructive question must never be read as consent.
+pendingRows = [
+  { id: 'r-del', name: 'del-esc.txt', mime: 'text/plain', size: 5, path: '/u/del-esc.txt', dedup: false, local: false, exists: true, isImage: false },
+]
+const S_ESC = 'sess-delete-escape'
+draw(() => cardsSlot.render({ sessionId: S_ESC }))
+await settle()
+let escTree = draw(() => cardsSlot.render({ sessionId: S_ESC }))
+const delBefore = deletes.length
+;(byClass(escTree, 'dfu-chip-delete')[0].props!.onClick as () => void)()
+await settle()
+escTree = draw(() => cardsSlot.render({ sessionId: S_ESC }))
+const backdrop = byClass(escTree, 'dfu-modal-backdrop')[0]
+;(backdrop.props!.onClick as () => void)()
+await settle()
+escTree = draw(() => cardsSlot.render({ sessionId: S_ESC }))
+ok('a backdrop click deletes nothing', deletes.length === delBefore, deletes.slice(delBefore))
+ok('a backdrop click closes the dialog', byClass(escTree, 'dfu-modal').length === 0)
+ok('a backdrop click keeps the card', byClass(escTree, 'dfu-chip').length === 1)
+;(byClass(escTree, 'dfu-chip-delete')[0].props!.onClick as () => void)()
+await settle()
+escTree = draw(() => cardsSlot.render({ sessionId: S_ESC }))
+const dialog = byClass(escTree, 'dfu-modal')[0]
+;(dialog.props!.onKeyDown as (e: unknown) => void)({ key: 'Escape' })
+await settle()
+escTree = draw(() => cardsSlot.render({ sessionId: S_ESC }))
+ok('Escape deletes nothing', deletes.length === delBefore, deletes.slice(delBefore))
+ok('Escape closes the dialog', byClass(escTree, 'dfu-modal').length === 0)
+ok('Escape keeps the card', byClass(escTree, 'dfu-chip').length === 1)
+pendingRows = null
+
+// ---- 14: the × confirmation is a localized second step --------------------
+// Closing a card drops this session's only handle on the file, so × asks too.
+// The stored file survives, which the dialog says; every "no" answer keeps the
+// card. Both languages must carry the question.
+for (const key of ['unrefTitle', 'unrefBody', 'unrefKeep', 'unrefConfirm']) {
+  ok('the unref dialog string exists in zh: ' + key, typeof dicts.zh[key] === 'string' && dicts.zh[key].length > 0, dicts.zh[key])
+  ok('the unref dialog string exists in en: ' + key, typeof dicts.en[key] === 'string' && dicts.en[key].length > 0, dicts.en[key])
+}
+ok('the two confirmations are distinct questions',
+  dicts.zh.unrefTitle !== dicts.zh.deleteTitle && dicts.en.unrefTitle !== dicts.en.deleteTitle,
+  [dicts.zh.unrefTitle, dicts.zh.deleteTitle])
+pendingRows = [
+  { id: 'r-u1', name: 'unref-one.txt', mime: 'text/plain', size: 5, path: '/u/unref-one.txt', dedup: false, local: false, exists: true, isImage: false },
+]
+const S_UNREF = 'sess-unref-confirm'
+draw(() => cardsSlot.render({ sessionId: S_UNREF }))
+await settle()
+const unrefDraw = (): unknown => draw(() => cardsSlot.render({ sessionId: S_UNREF }))
+let uTree = unrefDraw()
+const removesBefore = removes.length
+;(byClass(uTree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+ok('× alone un-references nothing', removes.length === removesBefore, removes.slice(removesBefore))
+ok('× opens a confirmation dialog', byClass(uTree, 'dfu-modal').length === 1)
+ok('the × dialog explains the file survives', textOf(uTree).includes(dicts.zh.unrefBody), textOf(uTree))
+ok('the × dialog names the file', textOf(uTree).includes('unref-one.txt'), textOf(uTree))
+// A backdrop click on the × dialog is also "no".
+;(byClass(uTree, 'dfu-modal-backdrop')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+ok('a backdrop click on the × dialog un-references nothing', removes.length === removesBefore, removes.slice(removesBefore))
+ok('a backdrop click on the × dialog keeps the card', byClass(uTree, 'dfu-chip').length === 1)
+// Escape is "no" as well.
+;(byClass(uTree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+;(byClass(uTree, 'dfu-modal')[0].props!.onKeyDown as (e: unknown) => void)({ key: 'Escape' })
+await settle()
+uTree = unrefDraw()
+ok('Escape on the × dialog un-references nothing', removes.length === removesBefore, removes.slice(removesBefore))
+ok('Escape on the × dialog keeps the card', byClass(uTree, 'dfu-chip').length === 1)
+// Cancelling is "no" too, and only the confirm answer closes the card.
+;(byClass(uTree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+;(byClass(uTree, 'dfu-modal-keep')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+ok('cancelling the × dialog keeps the card', byClass(uTree, 'dfu-chip').length === 1)
+ok('cancelling the × dialog un-references nothing', removes.length === removesBefore, removes.slice(removesBefore))
+;(byClass(uTree, 'dfu-chip-remove')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+;(byClass(uTree, 'dfu-modal-cancel')[0].props!.onClick as () => void)()
+await settle()
+uTree = unrefDraw()
+ok('confirming the × dialog un-references the card', removes.some((r) => r.path === '/u/unref-one.txt'), removes.slice(removesBefore))
+ok('confirming the × dialog drops the card', uTree === null, uTree)
+pendingRows = null
+
+// ---- 15: instant upload consults the hash before the transport --------------
+// Picking a file hashes it locally and asks the host whether those bytes are
+// already stored. A hit references the copy, so the transport never runs; a
+// miss, a failure, or a host without the route all fall back to uploading.
+const S_PROBE = 'sess-probe'
+// A second, otherwise empty session: the "one dedup card" assertions count
+// actions across the whole tree, so nothing else may live beside the card.
+const S_HIT = 'sess-probe-hit'
+let probeSessionId = S_PROBE
+const probeSession = async (): Promise<void> => {
+  draw(() => cardsSlot.render({ sessionId: probeSessionId }))
+  await settle()
+}
+const probePick = async (name: string, size: number): Promise<void> => {
+  const input = fileInput(attachSlot.render({ sessionId: probeSessionId }))
+  const onChange = input.props!.onChange as (event: unknown) => void
+  onChange({ target: { files: [{ name: name, size: size, type: 'text/plain' }], value: '' } })
+  await settle()
+  await settle()
+}
+
+// Feature off (an older host, or a caller that wires no hashing): unchanged.
+probeEnabled = false
+hashEnabled = false
+await probeSession()
+await probePick('off.txt', 10)
+ok('without hashing support the file still uploads', uploads.includes('off.txt'), uploads)
+ok('without hashing support no probe is sent', probeCalls.length === 0, probeCalls)
+
+// A hit: hashed locally, probed, referenced, and never uploaded. The hit runs in
+// an otherwise empty session so the tree holds only the card under test.
+probeSessionId = S_HIT
+await probeSession()
+probeEnabled = true
+hashEnabled = true
+probeReply = { ok: true, path: '/u/already-stored.txt', size: 4096, dedup: true }
+uploads.length = 0
+probeCalls.length = 0
+hashCalls.length = 0
+await probePick('stored.txt', 4096)
+ok('a hit hashes the file locally', hashCalls.includes('stored.txt'), hashCalls)
+ok('a hit sends the hash to the host', probeCalls.some((c) => c.name === 'stored.txt' && /^[0-9a-f]{64}$/.test(c.sha256)), probeCalls)
+ok('a hit never runs the transport', !uploads.includes('stored.txt'), uploads)
+ok('a hit probes under the picking session', probeCalls.every((c) => c.sessionId === probeSessionId), probeCalls)
+ok('a hit carries the card id', probeCalls.every((c) => typeof c.id === 'string' && c.id !== ''), probeCalls)
+const hitTree = await (async () => { await probeSession(); return draw(() => cardsSlot.render({ sessionId: probeSessionId })) })()
+ok('a hit still draws a card', textOf(hitTree).includes('stored.txt'), textOf(hitTree))
+ok('a hit marks the card saved', byClass(hitTree, 'dfu-chip-status-ok').length >= 1, byClass(hitTree, 'dfu-chip-status-ok').length)
+ok('a hit keeps a dedup card without the trash action', byClass(hitTree, 'dfu-chip-delete').length === 0, byClass(hitTree, 'dfu-chip-delete').length)
+
+// A miss: the probe answers "not stored" and the bytes are uploaded as before.
+probeReply = { ok: false, error: 'not stored' }
+uploads.length = 0
+probeCalls.length = 0
+reply = { ok: true, path: '/u/fresh.txt', size: 20, dedup: false }
+await probePick('fresh.txt', 20)
+ok('a miss probes once', probeCalls.filter((c) => c.name === 'fresh.txt').length === 1, probeCalls)
+ok('a miss falls back to the transport', uploads.includes('fresh.txt'), uploads)
+
+// A broken hash (null) skips the probe entirely and uploads.
+hashValue = null
+probeReply = { ok: true, path: '/u/x.txt', size: 5, dedup: true }
+uploads.length = 0
+probeCalls.length = 0
+await probePick('unhashable.txt', 5)
+ok('an unhashable file skips the probe', !probeCalls.some((c) => c.name === 'unhashable.txt'), probeCalls)
+ok('an unhashable file still uploads', uploads.includes('unhashable.txt'), uploads)
+hashValue = 'a'.repeat(64)
+
+// A probe that throws must not lose the pick either.
+probeEnabled = false
+hashEnabled = true
+uploads.length = 0
+probeCalls.length = 0
+await probePick('noprobe.txt', 7)
+ok('a host without the probe route still uploads', uploads.includes('noprobe.txt'), uploads)
+
+// The hashing state shows while the digest is computed, before any transfer:
+// hashFile parks on a promise here so the card is observable mid-digest.
+probeEnabled = true
+probeReply = { ok: true, path: '/u/slow-stored.txt', size: 100, dedup: true }
+uploads.length = 0
+probeCalls.length = 0
+let releaseHash: (value: string | null) => void = () => {}
+holdHash = {
+  promise: new Promise<string | null>((resolve) => { releaseHash = resolve }),
+  settle: (value: string | null) => releaseHash(value),
+}
+const hashInput = fileInput(attachSlot.render({ sessionId: S_PROBE }))
+const onHashChange = hashInput.props!.onChange as (event: unknown) => void
+onHashChange({ target: { files: [{ name: 'slow.txt', size: 100, type: 'text/plain' }], value: '' } })
+await settle()
+const midTree = draw(() => cardsSlot.render({ sessionId: S_PROBE }))
+ok('the card reports hashing before it uploads', textOf(midTree).includes(dicts.zh.hashing), textOf(midTree))
+ok('the hashing label is localized', typeof dicts.zh.hashing === 'string' && dicts.en.hashing.length > 0, [dicts.zh.hashing, dicts.en.hashing])
+ok('nothing is sent while hashing', uploads.length === 0 && probeCalls.length === 0, [uploads, probeCalls.length])
+holdHash!.settle('b'.repeat(64))
+await settle()
+await settle()
+ok('the hash resumes the flow into the probe', probeCalls.some((c) => c.name === 'slow.txt'), probeCalls)
+ok('a hash that lands as a hit still skips the transport', !uploads.includes('slow.txt'), uploads)
+holdHash = null
+
+// Closing the card while it is still hashing must not fall back to uploading:
+// no transport may start for a card the user already dismissed.
+probeSessionId = 'sess-probe-cancel'
+await probeSession()
+probeEnabled = true
+hashEnabled = true
+probeCalls.length = 0
+uploads.length = 0
+let releaseCancel: (value: string | null) => void = () => {}
+holdHash = {
+  promise: new Promise<string | null>((resolve) => { releaseCancel = resolve }),
+  settle: (value: string | null) => releaseCancel(value),
+}
+const cancelInput = fileInput(attachSlot.render({ sessionId: probeSessionId }))
+const onCancelChange = cancelInput.props!.onChange as (event: unknown) => void
+onCancelChange({ target: { files: [{ name: 'abandoned.txt', size: 64, type: 'text/plain' }], value: '' } })
+await settle()
+
+ok('a hashing card shows the hashing state', textOf(draw(() => cardsSlot.render({ sessionId: probeSessionId }))).includes(dicts.zh.hashing), textOf(draw(() => cardsSlot.render({ sessionId: probeSessionId }))))
+const hashTree = draw(() => cardsSlot.render({ sessionId: probeSessionId }))
+// `closeCard` renders the shared session, so this one drives its own ×.
+const hashRemove = byClass(hashTree, 'dfu-chip-remove')[0]
+;(hashRemove.props!.onClick as () => void)()
+await settle()
+ok('closing a hashing card needs no confirm dialog', byClass(draw(() => cardsSlot.render({ sessionId: probeSessionId })), 'dfu-modal').length === 0)
+holdHash!.settle('c'.repeat(64))
+await settle()
+await settle()
+ok('a closed card never starts a transport', !uploads.includes('abandoned.txt'), uploads)
+ok('a closed card never probes afterwards', !probeCalls.some((c) => c.name === 'abandoned.txt'), probeCalls)
+ok('a closed card is gone from the list', !textOf(draw(() => cardsSlot.render({ sessionId: probeSessionId }))).includes('abandoned.txt'))
+holdHash = null
+probeEnabled = false
+hashEnabled = false
+hashValue = 'a'.repeat(64)
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

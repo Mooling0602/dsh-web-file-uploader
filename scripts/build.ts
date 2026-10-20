@@ -43,9 +43,10 @@ execFileSync(process.execPath, [tsc, '-p', join(root, 'tsconfig.json')], { cwd: 
 // --- step 2: inline the core into the seam, then wrap it ---------------------
 
 // Inline a core: strip `export ` keywords so the factory becomes a plain
-// top-level function usable inside the module body.
+// top-level function usable inside the module body. Interfaces and type aliases
+// are erased by tsc already; only value exports reach here.
 const inlineCore = (coreFile: string): string => readFileSync(join(root, coreFile), 'utf8')
-  .replace(/^export\s+(function|const)\s+/gm, '$1 ')
+  .replace(/^export\s+(async\s+function|function|const|let|class)\s+/gm, '$1 ')
   .trim()
 
 const seam = readFileSync(join(root, 'lib', 'client-static.js'), 'utf8')

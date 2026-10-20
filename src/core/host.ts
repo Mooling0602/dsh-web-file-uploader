@@ -215,6 +215,23 @@ export interface CommitStreamArgs {
   sha256?: string
 }
 
+/**
+ * Preflight for the composer's "instant upload": the client hashes the picked
+ * file locally and asks whether these bytes are already stored. A hit registers
+ * the pending reference and returns the existing copy, so the transport never
+ * runs and no byte crosses the wire.
+ */
+export interface ProbeArgs {
+  sessionId?: string
+  /** Composer card id (see StagedEntry.cardId). */
+  id?: string
+  name?: string
+  mime?: string
+  size?: number
+  /** Lowercase hex SHA-256 of the whole file, computed by the client. */
+  sha256?: string
+}
+
 /** One file the composer registered as a local (no-upload) reference. */
 export interface LocalRefCard {
   /** Composer card id; the remove/delete handle. */
@@ -262,6 +279,7 @@ export interface HostCore {
   beginStream(args: BeginStreamArgs): Promise<BeginStreamResult>
   commitStream(args: CommitStreamArgs): Promise<UploadResult>
   abortStream(args: { id: string }): Promise<{ ok: boolean }>
+  probeExisting(args: ProbeArgs): Promise<UploadResult>
   registerLocal(args: LocalRefArgs): Promise<LocalRefResult>
   remove(args: PathArgs): Promise<{ ok: boolean; error?: string }>
   delete(args: PathArgs): Promise<DeleteResult>
@@ -636,6 +654,46 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
         staged.delete(id)
         void dropTemp(entry.tempPath)
       }
+    }
+  }
+
+  // Preflight a client-computed hash: when the content is already stored, this
+  // answers with the existing copy and registers the reference, and the caller
+  // never sends the bytes. A miss is not an error, it just means "upload it".
+  //
+  // Scope: only this plugin's own store. The lookup is the `.dfu-index.json`
+  // next to the uploaded files, so it never matches the host's own attachments
+  // (DSH_HOME/attachments, content-addressed by the official uploader) or any
+  // other file on the machine. A file the plugin has never stored is a miss
+  // even when the host holds identical bytes elsewhere.
+  //
+  // The hash is a claim, not proof: nothing here has read the bytes. That is
+  // acceptable because the index only ever maps content the host itself stored
+  // (see publish), and a preflight hit hands back a path this host already
+  // owns. It also means a wrong hash can reference the wrong file, so the
+  // client must hash faithfully rather than trust a declared size.
+  async function probeExisting(args: ProbeArgs): Promise<UploadResult> {
+    const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : undefined
+    const name = sanitizeName(args && args.name)
+    const mime = args && typeof args.mime === 'string' ? args.mime : ''
+    const hash = args && typeof args.sha256 === 'string' ? args.sha256.toLowerCase() : ''
+    if (!name) return { ok: false, error: 'invalid file name' }
+    if (!/^[0-9a-f]{64}$/.test(hash)) return { ok: false, error: 'invalid hash' }
+    const cardId = args && typeof args.id === 'string' && args.id !== '' ? args.id : undefined
+    try {
+      const uploadsBase = await deps.uploadsRoot(sessionId)
+      const uploadsDir = uploadsBase + '/uploads'
+      const index = await loadIndex(uploadsDir)
+      const existing = index[hash]
+      if (!existing) return { ok: false, error: 'not stored' }
+      const info = await deps.statPath(existing.path)
+      if (!info) return { ok: false, error: 'not stored' }
+      const bytes = info.size !== undefined ? info.size : Number(args && args.size) || 0
+      registerPending(sessionId, { id: cardId, name, mime, size: bytes, abs: existing.path, dedup: true })
+      probe('PROBE-HIT sid=' + sessionId + ' file=' + name + ' -> ' + existing.path)
+      return { ok: true, name, path: existing.path, size: bytes, dedup: true }
+    } catch (err) {
+      return { ok: false, error: errMsg(err) }
     }
   }
 
@@ -1480,6 +1538,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     beginStream,
     commitStream: (args) => enqueue(() => commitStream(args)),
     abortStream,
+    probeExisting: (args) => enqueue(() => probeExisting(args)),
     // Registering a local reference only touches the pending bookkeeping and
     // stats the original file; it never writes into uploads/.
     registerLocal: (args) => enqueue(() => registerLocal(args)),

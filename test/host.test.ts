@@ -19,7 +19,7 @@
 
 import { createHostCore, errMsg } from '../src/core/host.ts'
 import type { UploadResult } from '../src/core/host.ts'
-import { mkdirSync, readdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, existsSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -470,6 +470,55 @@ ok('list merges multiple upload roots', multi.files.some((f) => f.path.includes(
 
 rmSync(ROOT, { recursive: true, force: true })
 rmSync(ROOT2, { recursive: true, force: true })
+
+// ---- instant upload: a client-supplied hash skips the transfer --------------
+// The browser hashes the file and asks first. A hit registers the reference and
+// hands back the stored copy, so no byte travels; a miss is a plain answer, not
+// an error, and the caller falls back to a normal upload.
+
+const SP = 'sess-probe'
+const probeBytes = 'probe-content-identical-1234'
+const probeHash = createHash('sha256').update(probeBytes).digest('hex')
+const stored = await streamUpload(core, SP, 'probe.txt', 'text/plain', probeBytes, 'card-probe-1')
+ok('probe: the file is stored normally first', stored.ok === true && stored.dedup === false, JSON.stringify(stored))
+
+const hit = await core.probeExisting({ sessionId: SP, id: 'card-probe-2', name: 'again.txt', mime: 'text/plain', size: Buffer.byteLength(probeBytes), sha256: probeHash })
+ok('probe: a known hash is a hit', hit.ok === true && hit.dedup === true, JSON.stringify(hit))
+ok('probe: the hit points at the stored copy', hit.ok && hit.path === stored.path, JSON.stringify([hit.path, stored.path]))
+ok('probe: the hit reports the real size', hit.ok && hit.size === Buffer.byteLength(probeBytes), JSON.stringify(hit.size))
+
+// The preflight registers a reference, so the content is injected for this card
+// without any bytes having been sent.
+const spPending = await core.pendingFor(SP)
+ok('probe: the hit registers a live reference', spPending.some((r) => r.path === stored.path), JSON.stringify(spPending))
+
+// A hash the store has never seen is a miss, and must stay a plain answer.
+const missHash = createHash('sha256').update('never-stored-content').digest('hex')
+const miss = await core.probeExisting({ sessionId: SP, id: 'card-probe-3', name: 'nope.txt', mime: 'text/plain', size: 20, sha256: missHash })
+ok('probe: an unknown hash is a miss', miss.ok === false, JSON.stringify(miss))
+const spAfterMiss = await core.pendingFor(SP)
+ok('probe: a miss registers nothing', !spAfterMiss.some((r) => r.name === 'nope.txt'), JSON.stringify(spAfterMiss))
+
+// Malformed input never reaches the index.
+ok('probe: a short hash is refused', (await core.probeExisting({ sessionId: SP, name: 'x.txt', sha256: 'abc' })).ok === false)
+ok('probe: a non-hex hash is refused', (await core.probeExisting({ sessionId: SP, name: 'x.txt', sha256: 'z'.repeat(64) })).ok === false)
+ok('probe: a missing name is refused', (await core.probeExisting({ sessionId: SP, sha256: probeHash })).ok === false)
+ok('probe: an uppercase hash is accepted', (await core.probeExisting({ sessionId: SP, name: 'up.txt', sha256: probeHash.toUpperCase() })).ok === true)
+
+// Scope: only this plugin's own store answers. The host's official attachments
+// live elsewhere and are never consulted, so an unknown hash stays a miss even
+// though the machine holds plenty of other files.
+ok('probe: only the plugin index is consulted', miss.ok === false && stored.path !== undefined)
+
+// Cross-session: a hit in one session is visible to another, because the copy is
+// shared on disk (that is the whole point of content addressing).
+const otherSession = await core.probeExisting({ sessionId: S2, id: 'card-probe-4', name: 'from-b.txt', mime: 'text/plain', size: Buffer.byteLength(probeBytes), sha256: probeHash })
+ok('probe: a hit is shared across sessions', otherSession.ok === true && otherSession.path === stored.path, JSON.stringify(otherSession))
+
+// A vanished copy must not be reported as a hit: the index entry alone is stale.
+try { unlinkSync(stored.path!) } catch { /* already gone */ }
+const stale = await core.probeExisting({ sessionId: SP, id: 'card-probe-5', name: 'stale.txt', size: 10, sha256: probeHash })
+ok('probe: a stale index entry is a miss', stale.ok === false, JSON.stringify(stale))
 
 console.log(results.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

@@ -40,13 +40,17 @@ export interface FileCard {
   mime: string
   isImage: boolean
   previewUrl: string | null
-  status: 'uploading' | 'done' | 'error' | 'cancelling'
+  status: 'hashing' | 'uploading' | 'done' | 'error' | 'cancelling'
   error: string | null
   path: string | null
   loaded: number
   total: number
   controller: AbortController | null
   confirmCancel: boolean
+  /** This card's permanent delete is waiting for a second confirmation. */
+  confirmDelete: boolean
+  /** This card's un-reference is waiting for a second confirmation. */
+  confirmUnref: boolean
   savedSize?: number
   /** The host reused an already stored copy instead of writing these bytes. */
   dedup?: boolean
@@ -71,6 +75,14 @@ export interface ClientCoreDeps {
   pendingList?(sessionId: string): Promise<PendingRow[] | null>
   /** URL of a stored image's bytes, for a restored card's thumbnail. */
   thumbUrl?(sessionId: string, path: string): string
+  /**
+   * Content hash of a picked file, computed on this machine, so an already
+   * stored copy can be referenced without sending any bytes. Resolving null
+   * (or rejecting) just means the caller uploads normally.
+   */
+  hashFile?(file: File): Promise<string | null>
+  /** Ask the host whether these bytes are already stored, and if so reference them. */
+  probe?(args: ProbeArgs): Promise<UploadResult | null>
   deleteMany?(args: { sessionId?: string; paths: string[] }): Promise<DeleteManyResult | null>
   insertStyles?(css: string): void
 }
@@ -124,6 +136,16 @@ export interface UploadResult {
   size?: number
   dedup?: boolean
   error?: string
+}
+
+/** Metadata for the preflight probe: everything the host needs except bytes. */
+export interface ProbeArgs {
+  sessionId?: string
+  id?: string
+  name: string
+  mime?: string
+  size?: number
+  sha256: string
 }
 
 export interface PathArgs {
@@ -197,12 +219,149 @@ export interface ClientCore {
   apply(ctx: PluginContext): void
 }
 
+// --- incremental SHA-256 -----------------------------------------------------
+//
+// The browser's own digest (crypto.subtle.digest) only accepts a whole
+// ArrayBuffer, so hashing a multi-gigabyte File that way would have to hold the
+// entire file in memory. This is a small streaming implementation instead: the
+// file is read in slices and fed in, keeping memory flat regardless of size.
+// It is plain JS on purpose: the bundle must not grow a runtime dependency, and
+// a WASM build would need an extra asset the static bundle does not ship.
+
+export interface Sha256State {
+  update(chunk: Uint8Array): void
+  digest(): string
+}
+
+const SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]
+
+/** Streaming SHA-256: feed slices with update(), then call digest() once. */
+export function createSha256(): Sha256State {
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19
+  // Bytes left over from the previous slice, so every block is exactly 64 bytes.
+  let buffered = new Uint8Array(64)
+  let bufferedLen = 0
+  let totalLen = 0
+  const w = new Int32Array(64)
+
+  const processBlock = (bytes: Uint8Array, at: number) => {
+    for (let i = 0; i < 16; i += 1) {
+      const j = at + i * 4
+      w[i] = (bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]
+    }
+    for (let i = 16; i < 64; i += 1) {
+      const x = w[i - 15]
+      const y = w[i - 2]
+      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3)
+      const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10)
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7
+    for (let i = 0; i < 64; i += 1) {
+      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7))
+      const ch = (e & f) ^ (~e & g)
+      const t1 = (h + S1 + ch + SHA256_K[i] + w[i]) | 0
+      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10))
+      const maj = (a & b) ^ (a & c) ^ (b & c)
+      const t2 = (S0 + maj) | 0
+      h = g; g = f; f = e; e = (d + t1) | 0
+      d = c; c = b; b = a; a = (t1 + t2) | 0
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0
+    h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0
+  }
+
+  return {
+    update(chunk: Uint8Array) {
+      totalLen += chunk.length
+      let at = 0
+      if (bufferedLen > 0) {
+        const need = 64 - bufferedLen
+        if (chunk.length < need) {
+          buffered.set(chunk, bufferedLen)
+          bufferedLen += chunk.length
+          return
+        }
+        buffered.set(chunk.subarray(0, need), bufferedLen)
+        processBlock(buffered, 0)
+        bufferedLen = 0
+        at = need
+      }
+      while (at + 64 <= chunk.length) {
+        processBlock(chunk, at)
+        at += 64
+      }
+      if (at < chunk.length) {
+        buffered.set(chunk.subarray(at), 0)
+        bufferedLen = chunk.length - at
+      }
+    },
+    digest(): string {
+      // Pad: 0x80, zeros, then the bit length as a big-endian 64-bit integer.
+      const padLen = bufferedLen < 56 ? 56 - bufferedLen : 120 - bufferedLen
+      const tail = new Uint8Array(padLen + 8)
+      tail[0] = 0x80
+      const bitsHi = Math.floor(totalLen / 0x20000000)
+      const bitsLo = (totalLen * 8) >>> 0
+      tail[padLen] = (bitsHi >>> 24) & 0xff
+      tail[padLen + 1] = (bitsHi >>> 16) & 0xff
+      tail[padLen + 2] = (bitsHi >>> 8) & 0xff
+      tail[padLen + 3] = bitsHi & 0xff
+      tail[padLen + 4] = (bitsLo >>> 24) & 0xff
+      tail[padLen + 5] = (bitsLo >>> 16) & 0xff
+      tail[padLen + 6] = (bitsLo >>> 8) & 0xff
+      tail[padLen + 7] = bitsLo & 0xff
+      this.update(tail)
+      const out: string[] = []
+      for (const word of [h0, h1, h2, h3, h4, h5, h6, h7]) {
+        out.push((word >>> 0).toString(16).padStart(8, '0'))
+      }
+      return out.join('')
+    },
+  }
+}
+
+// Hash a File without loading it into memory. A worker would keep the main
+// thread free, but the slice loop below yields to the event loop between
+// chunks, which is enough for the composer to stay responsive.
+export const HASH_SLICE = 4 * 1024 * 1024
+
+export async function hashBlob(file: Blob): Promise<string | null> {
+  try {
+    if (!file || typeof file.slice !== 'function') return null
+    const hasher = createSha256()
+    for (let at = 0; at < file.size; at += HASH_SLICE) {
+      const slice = file.slice(at, Math.min(at + HASH_SLICE, file.size))
+      const buf = await slice.arrayBuffer()
+      hasher.update(new Uint8Array(buf))
+      // Let the page paint between slices (progress, cancellation).
+      await new Promise<void>((r) => setTimeout(r, 0))
+    }
+    return hasher.digest()
+  } catch {
+    return null
+  }
+}
+
+
 export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const react = deps.react
   const upload = deps.upload
   const remove = deps.remove
   const del = deps.delete
   const localRef = deps.localRef
+  const hashFile = deps.hashFile
+  const probe = deps.probe
   const hostPathFor = deps.hostPathFor
   const configGet = deps.configGet
   const configSet = deps.configSet
@@ -252,6 +411,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     zh: {
       attachTitle: '上传附件',
       uploading: '上传中…',
+      hashing: '校验中…',
       saved: '已保存',
       copyPath: '复制路径',
       copyAllPaths: '复制全部路径',
@@ -268,6 +428,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       deleteAllConfirm: '确认删除',
       remove: '移除',
       delete: '删除文件（不可找回）',
+      deleteTitle: '永久删除这个文件？',
+      deleteBody: '文件将从上传目录中删除，无法找回。只移除卡片请改用 ×。',
+      deleteKeep: '取消',
+      deleteConfirm: '永久删除',
+      unrefTitle: '移除这个附件？',
+      unrefBody: '移除后本会话不再引用该文件，之后的对话不会再附带它。文件仍保留在 dsh 主机磁盘上，可在插件设置中管理。',
+      unrefKeep: '取消',
+      unrefConfirm: '移除',
       dedupCardHint: '相同内容已存在，本卡片复用上传目录中的副本；为避免误删共享文件，这里不提供永久删除，请到插件设置中管理。',
       localBadge: '本地',
       localCardHint: '直接引用本机原始文件，未上传副本；解除卡片只会移除引用，不会删除原文件。',
@@ -327,6 +495,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     en: {
       attachTitle: 'Attach files',
       uploading: 'Uploading…',
+      hashing: 'Checking…',
       saved: 'Saved',
       copyPath: 'Copy path',
       copyAllPaths: 'Copy all paths',
@@ -343,6 +512,14 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       deleteAllConfirm: 'Delete',
       remove: 'Remove',
       delete: 'Delete file (permanent)',
+      deleteTitle: 'Permanently delete this file?',
+      deleteBody: 'The file is removed from the upload directory and cannot be recovered. Use × to only drop the card.',
+      deleteKeep: 'Cancel',
+      deleteConfirm: 'Delete',
+      unrefTitle: 'Remove this attachment?',
+      unrefBody: 'This session stops referencing the file, so later messages will no longer carry it. The file stays on the dsh host disk and remains manageable in the plugin settings.',
+      unrefKeep: 'Cancel',
+      unrefConfirm: 'Remove',
       dedupCardHint: 'Identical content is already stored, so this card reuses that copy. Permanent delete is hidden here to protect the shared file — manage uploaded files in the plugin settings.',
       localBadge: 'Local',
       localCardHint: 'References the original file on this machine; nothing was uploaded. Removing the card only drops the reference — the original file is never deleted.',
@@ -525,6 +702,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
             total: 0,
             controller: null,
             confirmCancel: false,
+            confirmDelete: false,
+            confirmUnref: false,
             savedSize: Number(row.size) || 0,
             dedup: row.dedup === true,
             local: row.local === true,
@@ -609,12 +788,47 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const removeCard = (sessionId: string | undefined, id: string) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
     if (!entry) return
+    // Hashing is a pre-transfer step: there are no bytes to lose yet, so the
+    // card closes without the "discard this upload?" question.
+    if (entry.status === 'hashing') {
+      store.remove(sessionId, id)
+      return
+    }
     if (entry.status === 'uploading' && entry.controller) {
       store.update(sessionId, id, { confirmCancel: true })
       return
     }
     if (entry.path) unref(sessionId, entry.path, id)
     store.remove(sessionId, id)
+  }
+
+  // The card's × asks before it drops the reference. Un-referencing keeps the
+  // stored file, but it is still the loss of the composer's only handle on it:
+  // once the card is gone the file stops being injected, and a local reference
+  // has no other way back. The batch bar's "remove all" stays a single step, since
+  // a batch control that asked per card would be noise: the confirmation
+  // lives here, on the per-card path, rather than inside removeCard.
+  const askUnref = (sessionId: string | undefined, id: string) => {
+    // A card still hashing holds no stored copy and no bytes in flight: closing
+    // it loses nothing, so it skips the question the finished cards ask.
+    const entry = store.files(sessionId).find((x) => x.id === id)
+    if (entry !== undefined && entry.status === 'hashing') {
+      removeCard(sessionId, id)
+      return
+    }
+    store.update(sessionId, id, { confirmUnref: true })
+  }
+
+  const dismissUnref = (sessionId: string | undefined, id: string) => {
+    store.update(sessionId, id, { confirmUnref: false })
+  }
+
+  // Confirm the un-reference and close the card in one step. The card's own
+  // upload-cancel question still takes precedence: a reference whose bytes are
+  // in flight has to be cancelled first.
+  const unrefConfirmed = (sessionId: string | undefined, id: string) => {
+    store.update(sessionId, id, { confirmUnref: false })
+    removeCard(sessionId, id)
   }
 
   // "Cancel upload": stop the transport now and drop the staged bytes. The card
@@ -641,9 +855,25 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   // the host (trash can). Falls back to remove (un-inject only) when the host
   // does not expose a `delete` RPC. Cross-session shared copies are protected
   // on the host side (removed:false) — this session's card still goes away.
+  //
+  // This is the one card action that destroys data no un-reference can bring
+  // back, and the trash sits beside ×, where a misclick loses the file. So
+  // the card asks first, reusing the same fixed dialog as the over-limit notice
+  // and the upload-cancel question. The delete itself only runs from the
+  // confirmed branch; dismissing the dialog (Cancel, backdrop, Escape) leaves
+  // both the card and the file untouched.
+  const askDelete = (sessionId: string | undefined, id: string) => {
+    store.update(sessionId, id, { confirmDelete: true })
+  }
+
+  const dismissDelete = (sessionId: string | undefined, id: string) => {
+    store.update(sessionId, id, { confirmDelete: false })
+  }
+
   const deleteCard = (sessionId: string | undefined, id: string) => {
     const entry = store.files(sessionId).find((x) => x.id === id)
-    if (entry && entry.path) {
+    if (!entry) return
+    if (entry.path) {
       try {
         if (typeof del === 'function') {
           del({ sessionId: sessionId, id: id, path: entry.path }).catch(() => {})
@@ -791,6 +1021,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
           total: file.size,
           controller: controller,
           confirmCancel: false,
+          confirmDelete: false,
+          confirmUnref: false,
         })
         // The File object itself rides the transport: the static bundle posts
         // it as the request body, so nothing here reads the whole file into
@@ -858,6 +1090,69 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
               store.update(sessionId, id, { status: 'error', error: String((err && err.message) || err) })
             })
         }
+        // Instant upload: hash the file here and ask the host whether it already
+        // stores these bytes. Only this plugin's own store is consulted, so a
+        // hit means the exact same content was uploaded through this plugin
+        // before. A miss, a failure or a host without the route all fall back to
+        // the normal upload, so the pick is never lost.
+        const probeThenUpload = () => {
+          if (typeof hashFile !== 'function' || typeof probe !== 'function') {
+            uploadNow()
+            return
+          }
+          // Still on screen and not being cancelled. Hashing is the one window
+          // where the transport has not started yet, so a card closed during it
+          // must NOT fall back to uploading: the bytes would arrive for a card
+          // nobody can see, and the host would hold an orphan reference until
+          // the TTL sweep. Every step below re-checks before committing to a
+          // transfer, and a vanished card simply stops the flow.
+          const live = () => {
+            const now = store.files(sessionId).find((x) => x.id === id)
+            return now !== undefined && now.status !== 'cancelling'
+          }
+          store.update(sessionId, id, { status: 'hashing' })
+          let pendingHash: Promise<string | null>
+          try {
+            pendingHash = hashFile(file)
+          } catch {
+            if (live()) uploadNow()
+            return
+          }
+          pendingHash
+            .then((hash) => {
+              if (!live()) return
+              if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) {
+                uploadNow()
+                return
+              }
+              return probe({
+                sessionId: sessionId,
+                id: id,
+                name: file.name,
+                mime: file.type || '',
+                size: file.size,
+                sha256: hash,
+              }).then((res) => {
+                // The card can close while the preflight is in flight.
+                if (!live()) {
+                  if (res && res.ok === true && typeof res.path === 'string') {
+                    unref(sessionId, res.path, id)
+                  }
+                  return
+                }
+                if (res && res.ok === true && typeof res.path === 'string') {
+                  settleUpload(res)
+                  return
+                }
+                uploadNow()
+              })
+            })
+            .catch(() => {
+              // Hashing failed (unreadable file, worker unavailable): upload,
+              // unless the card is already gone.
+              if (live()) uploadNow()
+            })
+        }
         let originalPath: string | null = null
         if (skipLocalUpload && typeof hostPathFor === 'function') {
           try {
@@ -868,7 +1163,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
           }
         }
         if (originalPath === null || typeof localRef !== 'function') {
-          uploadNow()
+          probeThenUpload()
           return
         }
         // Register the absolute path; on refusal (moved, not a file, route
@@ -881,7 +1176,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
           .then((res) => {
             const row = res && Array.isArray(res.results) ? res.results[0] : undefined
             if (!res || !res.ok || !row || row.ok !== true) {
-              uploadNow()
+              probeThenUpload()
               return
             }
             const entry = store.files(sessionId).find((x) => x.id === id)
@@ -902,7 +1197,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
               store.update(sessionId, id, { status: 'done', path: row.path, savedSize: row.size, local: true })
             }
           })
-          .catch(() => uploadNow())
+          .catch(() => probeThenUpload())
       })
     }
     return react.createElement(
@@ -971,7 +1266,15 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       }
 
       let statusNode = null
-      if (f.status === 'uploading') {
+      if (f.status === 'hashing') {
+        // Hashing happens in the page, before any byte is sent: the host cannot
+        // answer "already stored" until it knows the content hash.
+        statusNode = react.createElement(
+          'span',
+          { className: 'dfu-chip-status dfu-chip-status-active' },
+          tFn('hashing'),
+        )
+      } else if (f.status === 'uploading') {
         // Percentage once the transport has reported bytes: a streamed file
         // never knows its total up front, so keep the plain label until then.
         const pct = f.total > 0 ? Math.min(100, Math.floor(((f.loaded || 0) / f.total) * 100)) : 0
@@ -1013,7 +1316,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
                 type: 'button',
                 className: 'dfu-chip-delete',
                 title: tFn('delete'),
-                onClick: () => deleteCard(sessionId, f.id),
+                onClick: () => askDelete(sessionId, f.id),
               },
               react.createElement(
                 'svg',
@@ -1039,7 +1342,7 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         actions.push(
           react.createElement(
             'button',
-            { key: 'remove', type: 'button', className: 'dfu-chip-remove', title: tFn('remove'), onClick: () => removeCard(sessionId, f.id) },
+            { key: 'remove', type: 'button', className: 'dfu-chip-remove', title: tFn('remove'), onClick: () => askUnref(sessionId, f.id) },
             '×',
           ),
         )
@@ -1122,13 +1425,103 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         ),
       )
     }
+    // The trash can is the only card action that destroys a stored file. It
+    // asks first, in the same fixed dialog the over-limit notice uses, so the
+    // question stays visible wherever the dock sits. Escape, the backdrop and
+    // Cancel all take the safe branch and keep both the card and the file.
+    const deleting = files.find((f) => f.confirmDelete === true)
+    if (deleting !== undefined) {
+      modal = react.createElement(
+        'div',
+        {
+          key: 'dfu-delete-confirm',
+          className: 'dfu-modal-backdrop',
+          onClick: () => dismissDelete(sessionId, deleting.id),
+        },
+        react.createElement(
+          'div',
+          {
+            className: 'dfu-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': tFn('deleteTitle'),
+            onClick: (event: Event) => event.stopPropagation(),
+            onKeyDown: (event: KeyboardEvent) => {
+              if (event.key === 'Escape') dismissDelete(sessionId, deleting.id)
+            },
+          },
+          react.createElement('div', { className: 'dfu-modal-title' }, tFn('deleteTitle')),
+          react.createElement('div', { className: 'dfu-modal-body' }, tFn('deleteBody')),
+          react.createElement('div', { className: 'dfu-modal-file', title: deleting.name }, deleting.name),
+          react.createElement(
+            'div',
+            { className: 'dfu-modal-actions' },
+            react.createElement(
+              'button',
+              { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: () => dismissDelete(sessionId, deleting.id) },
+              tFn('deleteKeep'),
+            ),
+            react.createElement(
+              'button',
+              { type: 'button', className: 'dfu-modal-cancel', onClick: () => deleteCard(sessionId, deleting.id) },
+              tFn('deleteConfirm'),
+            ),
+          ),
+        ),
+      )
+    }
+    // The card's × asks first too: closing a card drops this session's only
+    // handle on the file, so the model stops receiving it from the next message
+    // on. The stored file survives, which is exactly what the dialog says.
+    // and the safe answer (keep the card) holds focus.
+    const unrefAsking = files.find((f) => f.confirmUnref === true)
+    if (unrefAsking !== undefined) {
+      modal = react.createElement(
+        'div',
+        {
+          key: 'dfu-unref-confirm',
+          className: 'dfu-modal-backdrop',
+          onClick: () => dismissUnref(sessionId, unrefAsking.id),
+        },
+        react.createElement(
+          'div',
+          {
+            className: 'dfu-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': tFn('unrefTitle'),
+            onClick: (event: Event) => event.stopPropagation(),
+            onKeyDown: (event: KeyboardEvent) => {
+              if (event.key === 'Escape') dismissUnref(sessionId, unrefAsking.id)
+            },
+          },
+          react.createElement('div', { className: 'dfu-modal-title' }, tFn('unrefTitle')),
+          react.createElement('div', { className: 'dfu-modal-body' }, tFn('unrefBody')),
+          react.createElement('div', { className: 'dfu-modal-file', title: unrefAsking.name }, unrefAsking.name),
+          react.createElement(
+            'div',
+            { className: 'dfu-modal-actions' },
+            react.createElement(
+              'button',
+              { type: 'button', className: 'dfu-modal-keep', autoFocus: true, onClick: () => dismissUnref(sessionId, unrefAsking.id) },
+              tFn('unrefKeep'),
+            ),
+            react.createElement(
+              'button',
+              { type: 'button', className: 'dfu-modal-cancel', onClick: () => unrefConfirmed(sessionId, unrefAsking.id) },
+              tFn('unrefConfirm'),
+            ),
+          ),
+        ),
+      )
+    }
     // Batch controls, shown once the dock holds more than one card: copy every
     // settled path at once, remove the cards (files stay on disk), or delete
-    // the files permanently where that is safe. Cards still uploading are left
-    // alone so a batch never silently discards bytes; their per-card × keeps
-    // asking first.
+    // the files permanently where that is safe. Cards still uploading or hashing
+    // are left alone so a batch never silently discards a pick mid-flight; their
+    // per-card × closes them without asking, since nothing has been sent yet.
     const settledPaths = files.filter((f) => f.status === 'done' && f.path).map((f) => f.path as string)
-    const removable = files.filter((f) => f.status !== 'uploading' && f.status !== 'cancelling')
+    const removable = files.filter((f) => f.status !== 'uploading' && f.status !== 'hashing' && f.status !== 'cancelling')
     // A card whose upload reused an existing copy must not take that shared
     // file down with it; a local reference points at the user's own file. A
     // batch only un-references those cards.

@@ -4,7 +4,7 @@
 
 // Guarded browser style insertion (the web build may provide a cleaner seam).
 import type {
-  ClientCore, ClientCoreDeps, DfuConfig, LocalRefArgs, LocalRefResult, PathArgs, ReactLike,
+  ClientCore, ClientCoreDeps, DfuConfig, LocalRefArgs, LocalRefResult, PathArgs, ProbeArgs, ReactLike,
   UploadArgs, UploadResult,
 } from './core/client.js'
 import type { PluginContext } from './types.js'
@@ -13,6 +13,7 @@ import type { PluginContext } from './types.js'
 // declaration below is erased on compile, so the emitted file stays free of
 // imports — the web loader factory inlines it verbatim.
 declare const createClientCore: (deps: ClientCoreDeps) => ClientCore
+declare const hashBlob: (file: Blob) => Promise<string | null>
 
 const ensureStyles = (() => {
   let done = false
@@ -62,6 +63,26 @@ export function apply(ctx: PluginContext) {
   }
   const core = createClientCore({
     react: react,
+    // Instant upload: hash the picked File here, before any byte is sent, so the
+    // host can answer "already stored" from its own index. The core's streaming
+    // digest keeps memory flat for any file size (crypto.subtle would need the
+    // whole buffer) and yields between slices so the page stays responsive.
+    hashFile: (file: File) => hashBlob(file),
+    probe: async (args: ProbeArgs): Promise<UploadResult | null> => {
+      const url = '/dsh-web-file-uploader/probe?name=' + encodeURIComponent(args.name) +
+        '&mime=' + encodeURIComponent(args.mime || '') + '&session=' + encodeURIComponent(String(args.sessionId)) +
+        '&size=' + encodeURIComponent(String(args.size || 0)) + '&id=' + encodeURIComponent(args.id || '') +
+        '&sha256=' + encodeURIComponent(args.sha256)
+      try {
+        const res = await fetch(url, { method: 'POST', credentials: 'same-origin' })
+        // 404 is the ordinary miss; anything else that is not JSON is a miss too,
+        // so an older host simply uploads.
+        const body = await res.json().catch(() => null)
+        return body && typeof body === 'object' ? (body as UploadResult) : null
+      } catch {
+        return null
+      }
+    },
     // Static transport: the browser posts the File itself to the host route, so
     // the page never holds the bytes (and the route never sees base64). XHR
     // rather than fetch, because only XHR reports progress for a Blob body —

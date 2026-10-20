@@ -291,6 +291,39 @@ export function apply(ctx: PluginContext): void {
     },
   }), 'dfu: upload route')
 
+  // --- probe route: client-hashed preflight for an instant upload ------------
+  //
+  // The browser hashes the picked file locally and asks here first. A hit means
+  // the content is already stored, so the reference is registered and the body
+  // never travels. The query string carries metadata only; there is no body.
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/dsh-web-file-uploader/probe',
+    handler: async (req, res) => {
+      try {
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const url = new URL(req.url || '/', 'http://localhost')
+        const result = await core.probeExisting({
+          sessionId: url.searchParams.get('session') || '',
+          id: url.searchParams.get('id') || '',
+          name: url.searchParams.get('name') || '',
+          mime: url.searchParams.get('mime') || '',
+          size: Number(url.searchParams.get('size')) || 0,
+          sha256: url.searchParams.get('sha256') || '',
+        })
+        // A miss is a normal answer, not a failure: the client uploads instead.
+        sendJson(res, result.ok ? 200 : 404, result)
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: errMsg(err) })
+      }
+    },
+  }), 'dfu: probe route')
+
   // --- remove route: called when the user closes an attachment card --------
 
   ctx.effect(() => webServer.register({
