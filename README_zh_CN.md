@@ -2,11 +2,21 @@
 
 > **🌐 语言切换** · [English](README.md) | [中文（简体）](README_zh_CN.md)
 
+[![CI](https://github.com/Mooling0602/dsh-web-file-uploader/actions/workflows/ci.yml/badge.svg)](https://github.com/Mooling0602/dsh-web-file-uploader/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com/p/Mooling0602/dsh-web-file-uploader/)
+
 这是一个为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 开发的文件上传插件。它为提示词输入框添加了一个 [DeepSeek 网页聊天](https://chat.deepseek.com) 风格的**回形针附件按钮**，可以把选中的文件上传到 **DSH 主机**，并做了**模型感知适配**，确保文件能被正在运行的模型真正读取；此外还支持**内容寻址去重**。
 
 目前支持 web 和桌面端，对 [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) 的支持正在计划中。
 
 如果你想了解插件的运行效果，可以在 [画廊](GALLARY_zh_CN.md) 中查看。
+
+> [!WARNING]
+>
+> 近期由于本人的 npm 账号仍在恢复，无法发布软件包，如果 npm 上突然出现同名软件包，请不要下载安装！
+>
+> 对于本项目不支持的分发源，使用它们的风险自负！请在 [Issues](https://github.com/Mooling0602/dsh-web-file-uploader/issues) 报告任何与分发源相关的安全问题。
 
 ## 功能特性
 
