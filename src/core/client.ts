@@ -67,6 +67,10 @@ export interface ClientCoreDeps {
   configGet?(): Promise<DfuConfig | null>
   configSet?(cfg: Partial<DfuConfig>): Promise<(DfuConfig & { ok?: boolean }) | null>
   filesList?(): Promise<FilesListResult | null>
+  /** This session's live references, so a reload can rebuild its cards. */
+  pendingList?(sessionId: string): Promise<PendingRow[] | null>
+  /** URL of a stored image's bytes, for a restored card's thumbnail. */
+  thumbUrl?(sessionId: string, path: string): string
   deleteMany?(args: { sessionId?: string; paths: string[] }): Promise<DeleteManyResult | null>
   insertStyles?(css: string): void
 }
@@ -171,6 +175,24 @@ export interface DeleteManyResult {
   error?: string
 }
 
+/**
+ * One live host reference, as the composer needs it to rebuild a card after a
+ * page reload. The host keeps these in process memory; the composer keeps its
+ * cards in component state, so without this the two drift apart on every
+ * reload: no card on screen, but the reference keeps injecting into messages.
+ */
+export interface PendingRow {
+  id: string
+  name: string
+  mime: string
+  size: number
+  path: string
+  dedup: boolean
+  local: boolean
+  exists: boolean
+  isImage: boolean
+}
+
 export interface ClientCore {
   apply(ctx: PluginContext): void
 }
@@ -186,6 +208,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
   const configSet = deps.configSet
   const filesList = deps.filesList
   const deleteMany = deps.deleteMany
+  const pendingList = deps.pendingList
+  const thumbUrl = deps.thumbUrl
   const insertStyles = deps.insertStyles || (() => {})
 
   // Composer mark: the shell's own 16px paperclip outline
@@ -455,6 +479,64 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
     }
   }
   const store = createStore()
+
+  // --- card restore after a page reload -------------------------------------
+  // A reload rebuilds this module, so every card is gone while the host still
+  // holds the session's references — and keeps injecting them into later
+  // messages with nothing on screen to release them. On mount the composer
+  // pulls those rows once per session and rebuilds a "done" card for each.
+  // Restored cards behave like any other finished card: × un-references, the
+  // trash button deletes, and a send folds or injects them as usual.
+  const restoredSessions = new Set<string>()
+
+  const restoreCards = (sessionId: string | undefined) => {
+    if (!sessionId || typeof pendingList !== 'function') return
+    if (restoredSessions.has(sessionId)) return
+    restoredSessions.add(sessionId)
+    pendingList(sessionId)
+      .then((rows) => {
+        if (!Array.isArray(rows) || rows.length === 0) return
+        const live = store.files(sessionId)
+        for (const row of rows) {
+          if (!row || typeof row.path !== 'string' || row.path === '') continue
+          // A row whose stored copy vanished cannot be read by the model, so
+          // release it instead of drawing a card that would never work.
+          if (row.exists === false) {
+            unref(sessionId, row.path, row.id)
+            continue
+          }
+          // An upload that finished while this fetch was in flight already
+          // produced the card; never show the same reference twice.
+          if (live.some((c) => c.id === row.id || c.path === row.path)) continue
+          const preview = row.isImage && typeof thumbUrl === 'function'
+            ? thumbUrl(sessionId, row.path)
+            : null
+          store.add(sessionId, {
+            id: row.id || String(Date.now()) + '-' + Math.random().toString(36).slice(2, 9),
+            name: row.name || row.path.slice(row.path.lastIndexOf('/') + 1),
+            size: Number(row.size) || 0,
+            mime: row.mime || '',
+            isImage: row.isImage === true,
+            previewUrl: preview,
+            status: 'done',
+            error: null,
+            path: row.path,
+            loaded: 0,
+            total: 0,
+            controller: null,
+            confirmCancel: false,
+            savedSize: Number(row.size) || 0,
+            dedup: row.dedup === true,
+            local: row.local === true,
+          })
+        }
+      })
+      .catch(() => {
+        // Host older than this feature, or unreachable: cards stay empty, which
+        // is exactly the pre-restore behaviour.
+        restoredSessions.delete(sessionId)
+      })
+  }
 
   const formatSize = (bytes: number): string => {
     if (!Number.isFinite(bytes) || bytes < 0) return ''
@@ -858,6 +940,12 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       // Drop an armed batch confirmation once individual cards thin the list out.
       if (files.length <= 1) setArmed(null)
     }, [files.length])
+    react.useEffect(() => {
+      // Pull this session's live references once. This is the only moment the
+      // client learns what the host still holds; without it a reload leaves the
+      // references live but invisible, and they keep injecting into messages.
+      restoreCards(sessionId)
+    }, [sessionId])
     if (!files.length && notice === null) return null
     const chips: unknown[] = []
     files.forEach((f) => {

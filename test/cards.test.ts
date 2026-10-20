@@ -139,6 +139,14 @@ const localCalls: LocalCall[] = []
 let localFails = false
 const hostPaths = new Map<string, string>()
 
+// Card restore: a page reload rebuilds the client, so the composer asks the
+// host for this session's live references and rebuilds a "done" card for each.
+// A row whose stored copy vanished is released instead of drawn.
+const pendingCalls: string[] = []
+const thumbCalls: Array<{ sessionId: string; path: string }> = []
+let pendingRows: Array<Record<string, unknown>> | null = null
+let pendingFails = false
+
 const core = createClientCore({
   react,
   upload: async (args) => {
@@ -155,6 +163,15 @@ const core = createClientCore({
   },
   hostPathFor: (file: File) => hostPaths.get((file as unknown as { name: string }).name) ?? null,
   configGet: async () => ({ ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: maxFilesSetting, skipLocalUpload: skipLocalUploadSetting }),
+  pendingList: async (sessionId: string) => {
+    pendingCalls.push(sessionId)
+    if (pendingFails) return null
+    return pendingRows as never
+  },
+  thumbUrl: (sessionId: string, path: string) => {
+    thumbCalls.push({ sessionId: sessionId, path: path })
+    return '/dsh-web-file-uploader/thumb?session=' + sessionId + '&path=' + encodeURIComponent(path)
+  },
   insertStyles: () => {},
 })
 const ctx = {
@@ -545,6 +562,63 @@ ok('delete-all drops both cards', tree === null, tree)
 ok('delete-all deletes the uploaded file', deletes.some((d) => d.path === '/u/normal-del.txt'), deletes)
 ok('delete-all never deletes a local original', !deletes.some((d) => d.path === '/home/user/originals/local-del.txt'), deletes)
 ok('delete-all un-references the local card', removes.some((r) => r.path === '/home/user/originals/local-del.txt'), removes)
+
+// ---- 12: a reload rebuilds the cards the host still holds ------------------
+// The composer's cards live in client memory, so a reload drops them while the
+// host keeps the references and keeps injecting them into later messages. On
+// mount the composer pulls the session's live rows and redraws the cards, so
+// the screen and the host agree again. A row whose stored copy vanished is
+// released instead of drawn (a card that could never be read is worse).
+const S_RELOAD = 'sess-reload'
+pendingRows = [
+  { id: 'r-txt', name: 'reloaded.txt', mime: 'text/plain', size: 34, path: '/u/reloaded.txt', dedup: false, local: false, exists: true, isImage: false },
+  { id: 'r-png', name: 'reloaded.png', mime: 'image/png', size: 99, path: '/u/reloaded.png', dedup: false, local: false, exists: true, isImage: true },
+  { id: 'r-gone', name: 'vanished.txt', mime: 'text/plain', size: 3, path: '/u/vanished.txt', dedup: false, local: false, exists: false, isImage: false },
+]
+const reloaded = (): unknown => draw(() => cardsSlot.render({ sessionId: S_RELOAD }))
+// The restore is one awaited host round-trip, so the first paint is empty and
+// the cards appear on the paint after it settles.
+reloaded()
+await settle()
+let reloadTree = reloaded()
+ok('a reload asks the host for this session once', pendingCalls.filter((s) => s === S_RELOAD).length === 1, pendingCalls)
+ok('a reload redraws a card per live reference', byClass(reloadTree, 'dfu-chip').length === 2, byClass(reloadTree, 'dfu-chip').length)
+ok('a redrawn card carries its stored path', textOf(reloadTree).includes('reloaded.txt'), textOf(reloadTree))
+ok('a redrawn card shows the saved status', byClass(reloadTree, 'dfu-chip-status-ok').length === 2, byClass(reloadTree, 'dfu-chip-status-ok').length)
+ok('a redrawn image card asks the host for a thumbnail', thumbCalls.some((t) => t.path === '/u/reloaded.png'), thumbCalls)
+ok('a redrawn image card renders that thumbnail', (byClass(reloadTree, 'dfu-chip-thumb') as FakeNode[]).some((n) => typeof n.props?.src === 'string' && String(n.props.src).includes('reloaded.png')), all(reloadTree).map((n) => n.props?.src))
+ok('a reference whose copy vanished is released, not drawn', removes.some((r) => r.path === '/u/vanished.txt' && r.id === 'r-gone'), removes)
+ok('the vanished reference never becomes a card', !textOf(reloadTree).includes('vanished.txt'), textOf(reloadTree))
+// Re-rendering (a keystroke, a streaming token) must not re-query or duplicate.
+reloadTree = reloaded()
+ok('re-rendering does not re-query the host', pendingCalls.filter((s) => s === S_RELOAD).length === 1, pendingCalls)
+ok('re-rendering does not duplicate the cards', byClass(reloadTree, 'dfu-chip').length === 2, byClass(reloadTree, 'dfu-chip').length)
+// A restored card is a normal finished card afterwards: × un-references it.
+const restoredRemove = byClass(reloadTree, 'dfu-chip-remove')[0]
+;(restoredRemove.props!.onClick as () => void)()
+await settle()
+reloadTree = reloaded()
+ok('a restored card can be un-referenced', removes.some((r) => r.path === '/u/reloaded.txt' && r.id === 'r-txt'), removes)
+ok('un-referencing a restored card drops it from the row', byClass(reloadTree, 'dfu-chip').length === 1, byClass(reloadTree, 'dfu-chip').length)
+
+// An empty answer (fresh session, or a host without the feature) draws nothing.
+const S_FRESH = 'sess-reload-empty'
+pendingRows = []
+draw(() => cardsSlot.render({ sessionId: S_FRESH }))
+await settle()
+const freshTree = draw(() => cardsSlot.render({ sessionId: S_FRESH }))
+ok('a session with no references draws no card', freshTree === null, freshTree)
+ok('an empty answer still queries the host', pendingCalls.includes(S_FRESH), pendingCalls)
+
+// A host that cannot answer (older build, unreachable route) keeps the plain
+// reload behaviour rather than breaking the composer.
+const S_DOWN = 'sess-reload-down'
+pendingFails = true
+draw(() => cardsSlot.render({ sessionId: S_DOWN }))
+await settle()
+const downTree = draw(() => cardsSlot.render({ sessionId: S_DOWN }))
+ok('an unreachable host leaves the card area empty', downTree === null, downTree)
+pendingFails = false
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

@@ -406,6 +406,43 @@ const localImageBlocks = decisionContent(localImageDecision).filter((b) => b.typ
 ok('a local image becomes a native image block', localImageBlocks.length === 1, localImageBlocks.length)
 await core.remove({ sessionId: S9, path: localPng, id: 'local-pic' })
 
+// A page reload rebuilds the client, so the composer asks for this session's
+// live references and rebuilds its cards from them. pendingFor is that query:
+// it must report every field a card needs, and it must not invent one for a
+// stored copy that is gone (the merge/tip cards below are the interesting bit).
+const S_RESTORE = 'sess-restore-after-reload'
+await streamUpload(core, S_RESTORE, 'restore-a.txt', 'text/plain', 'restore-a')
+await streamUpload(core, S_RESTORE, 'restore-b.png', 'image/png', 'restore-b')
+const sidecar = originals + '/restore-sidecar.txt'
+writeFileSync(sidecar, 'sidecar')
+await core.registerLocal({ sessionId: S_RESTORE, cards: [{ id: 'restore-local', name: 'restore-sidecar.txt', mime: 'text/plain', size: 7, path: sidecar }] })
+
+const restored = await core.pendingFor(S_RESTORE)
+ok('pendingFor reports every live reference', restored.length === 3, restored.length)
+ok('a restored row carries the card id the host recorded', restored.some((r) => r.id !== '' && r.name === 'restore-a.txt'), JSON.stringify(restored.map((r) => r.id)))
+ok('a restored row carries the path a card action needs', restored.every((r) => typeof r.path === 'string' && r.path !== ''), JSON.stringify(restored.map((r) => r.path)))
+ok('a restored image row is marked for thumbnails', restored.some((r) => r.name === 'restore-b.png' && r.isImage === true), JSON.stringify(restored.map((r) => [r.name, r.isImage])))
+ok('a restored real upload reports exists', restored.some((r) => r.name === 'restore-a.txt' && r.exists === true))
+ok('a restored local reference keeps its flag', restored.some((r) => r.name === 'restore-sidecar.txt' && r.local === true))
+ok('pendingFor is scoped to its session', (await core.pendingFor('sess-not-in-play')).length === 0)
+ok('an empty session id yields no rows', (await core.pendingFor('')).length === 0)
+
+// A reference left behind after its stored copy vanished must be reported as
+// not existing, so the composer releases it instead of drawing a dead card.
+const vanished = await core.pendingFor(S_RESTORE)
+const vanishedRow = vanished.find((r) => r.name === 'restore-a.txt')
+if (vanishedRow) rmSync(vanishedRow.path, { force: true })
+const afterVanished = await core.pendingFor(S_RESTORE)
+ok('a vanished stored copy is reported as not existing', afterVanished.some((r) => r.name === 'restore-a.txt' && r.exists === false), JSON.stringify(afterVanished.map((r) => [r.name, r.exists])))
+await core.remove({ sessionId: S_RESTORE, path: vanishedRow ? vanishedRow.path : '' })
+const bRow = afterVanished.find((r) => r.name === 'restore-b.png')
+const restoredText = injectText(await runPreStep(S_RESTORE)) as string
+ok('released references stop being injected', !restoredText.includes('restore-a.txt'), restoredText.slice(0, 200))
+ok('the remaining reference is still injected', bRow !== undefined && restoredText.includes(bRow.path), restoredText.slice(0, 200))
+await core.remove({ sessionId: S_RESTORE, path: bRow ? bRow.path : '' })
+await core.remove({ sessionId: S_RESTORE, path: sidecar })
+ok('a fully released session reports no rows', (await core.pendingFor(S_RESTORE)).length === 0, (await core.pendingFor(S_RESTORE)).length)
+
 // multi-root: two uploads roots each with an index
 const ROOT2 = join(tmpdir(), 'dfu-host-core-test-2')
 rmSync(ROOT2, { recursive: true, force: true })

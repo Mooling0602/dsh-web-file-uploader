@@ -413,6 +413,107 @@ export function apply(ctx: PluginContext): void {
     },
   }), 'dfu: local-reference route')
 
+  // --- card-restore routes: the composer after a page reload ----------------
+  // The composer keeps its attachment cards in client memory, so a reload drops
+  // every card while this host still holds the references and keeps injecting
+  // them into later messages. The client asks for them on mount and rebuilds
+  // the cards, so the screen and the host agree again.
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/dsh-web-file-uploader/pending',
+    handler: async (req, res) => {
+      try {
+        if (req.method !== 'GET') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const url = new URL(req.url || '/', 'http://localhost')
+        const sessionId = url.searchParams.get('session') || ''
+        if (!sessionId) {
+          sendJson(res, 400, { ok: false, error: 'missing session' })
+          return
+        }
+        const rows = await core.pendingFor(sessionId)
+        sendJson(res, 200, { ok: true, rows: rows })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: errMsg(err) })
+      }
+    },
+  }), 'dfu: pending route (restore composer cards)')
+
+  // Thumbnails for restored cards. A live card streams its preview from the
+  // picked File (a blob URL); after a reload that File is gone, so the pixels
+  // come from the stored copy instead. Only a still-referenced path under an
+  // upload root is served — the route never becomes a generic file reader.
+  const thumbTypes: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+  }
+  const MAX_THUMB_BYTES = 32 * 1024 * 1024
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/dsh-web-file-uploader/thumb',
+    handler: async (req, res) => {
+      try {
+        if (req.method !== 'GET') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const url = new URL(req.url || '/', 'http://localhost')
+        const sessionId = url.searchParams.get('session') || ''
+        const rawPath = url.searchParams.get('path') || ''
+        if (!sessionId || !rawPath) {
+          sendJson(res, 400, { ok: false, error: 'missing session or path' })
+          return
+        }
+        const ext = rawPath.slice(rawPath.lastIndexOf('.') + 1).toLowerCase()
+        const type = thumbTypes[ext]
+        if (!type) {
+          sendJson(res, 415, { ok: false, error: 'not a thumbnail-capable image' })
+          return
+        }
+        // The path must still be live for THIS session and sit inside an upload
+        // root, so a crafted query cannot read arbitrary files through here.
+        const rows = await core.pendingFor(sessionId)
+        if (!rows.some((r) => r.path === rawPath && r.exists)) {
+          sendJson(res, 404, { ok: false, error: 'not referenced by this session' })
+          return
+        }
+        const roots = [(dshHome() + '/uploads')]
+        const inside = roots.some((root) => rawPath.indexOf(root + '/') === 0)
+        if (!inside) {
+          sendJson(res, 403, { ok: false, error: 'path outside the upload root' })
+          return
+        }
+        const info = statSync(rawPath)
+        if (!info.isFile()) {
+          sendJson(res, 404, { ok: false, error: 'not a file' })
+          return
+        }
+        if (info.size > MAX_THUMB_BYTES) {
+          sendJson(res, 413, { ok: false, error: 'image too large for a thumbnail' })
+          return
+        }
+        const bytes = readFileSync(rawPath)
+        res.writeHead(200, {
+          'content-type': type,
+          'content-length': bytes.length,
+          'cache-control': 'no-store',
+        })
+        res.end(bytes)
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: errMsg(err) })
+      }
+    },
+  }), 'dfu: thumb route (restored card previews)')
+
   // --- list / delete-many routes: the settings "manage files" panel ---------
 
   ctx.effect(() => webServer.register({

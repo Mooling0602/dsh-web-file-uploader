@@ -175,6 +175,17 @@ export function apply(ctx: PluginContext) {
       const res = await fetch('/dsh-web-file-uploader/files')
       return res.json()
     },
+    // Card restore: after a reload the composer rebuilds its cards from the
+    // session's live host references, and a restored image card streams its
+    // thumbnail from the stored copy (its File object is gone).
+    pendingList: async (sessionId: string) => {
+      const res = await fetch('/dsh-web-file-uploader/pending?session=' + encodeURIComponent(String(sessionId)))
+      const body = await res.json()
+      return body && Array.isArray(body.rows) ? body.rows : null
+    },
+    thumbUrl: (sessionId: string, path: string) =>
+      '/dsh-web-file-uploader/thumb?session=' + encodeURIComponent(String(sessionId)) +
+      '&path=' + encodeURIComponent(path),
     deleteMany: async (args: { sessionId?: string; paths: string[] }) => {
       const res = await fetch('/dsh-web-file-uploader/delete-many', {
         method: 'POST',

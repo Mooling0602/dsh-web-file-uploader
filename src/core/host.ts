@@ -121,6 +121,24 @@ export interface UploadRow {
   overdue: boolean
 }
 
+/**
+ * One live reference as the composer needs it to rebuild a card after a page
+ * reload. `exists` is false when the stored copy is gone (the sweep reclaimed
+ * it, or a local reference was moved); such a row is reported but not restored.
+ */
+export interface PendingRow {
+  id: string
+  name: string
+  mime: string
+  size: number
+  path: string
+  dedup: boolean
+  local: boolean
+  exists: boolean
+  /** True for a MIME type the composer renders as a thumbnail. */
+  isImage: boolean
+}
+
 export interface UploadResult {
   ok: boolean
   name?: string
@@ -249,6 +267,8 @@ export interface HostCore {
   delete(args: PathArgs): Promise<DeleteResult>
   list(): Promise<ListResult>
   deleteMany(args: DeleteManyArgs): Promise<DeleteManyResult>
+  /** A session's live references, for restoring composer cards after a reload. */
+  pendingFor(sessionId: string): Promise<PendingRow[]>
   collect(): Promise<void>
   preStep(payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>
 }
@@ -257,6 +277,9 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
   const pending = new Map<string, PendingEntry[]>()
   const MODALITY_TTL = 10 * 60 * 1000
   const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+  // The composer renders a thumbnail for exactly these; keep the list in step
+  // with IMAGE_TYPES in the client core.
+  const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
   // Serialize uploads so the hash check + write + index update never race.
   let uploadQueue: Promise<unknown> = Promise.resolve()
@@ -391,6 +414,44 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
       if (row && row.some((e) => e.abs === absPath)) holders.push(sessionId)
     }
     return holders
+  }
+
+  // A session's live references, shaped for the composer. The client loses its
+  // cards on every page reload while this map lives in the host process, so the
+  // composer asks for these rows on mount and rebuilds the cards from them —
+  // otherwise the references stay live here and keep getting injected into
+  // later messages with nothing on screen to remove them.
+  //
+  // A row whose stored copy is gone is reported with exists:false: the client
+  // drops it and tells this host to release the reference, rather than showing
+  // a card for a file the model could not read.
+  async function pendingFor(sessionIdArg: string): Promise<PendingRow[]> {
+    const sessionId = typeof sessionIdArg === 'string' ? sessionIdArg : ''
+    if (!sessionId) return []
+    const row = pending.get(sessionId)
+    if (!row || row.length === 0) return []
+    const out: PendingRow[] = []
+    for (const entry of row) {
+      let exists = false
+      try {
+        const info = await deps.statPath(entry.abs)
+        exists = !!(info && info.isFile !== false)
+      } catch {
+        exists = true // stay conservative on stat errors, like the GC does
+      }
+      out.push({
+        id: entry.id,
+        name: entry.name,
+        mime: entry.mime,
+        size: entry.size,
+        path: entry.abs,
+        dedup: entry.dedup === true,
+        local: entry.local === true,
+        exists: exists,
+        isImage: IMAGE_MIME_TYPES.indexOf(entry.mime) >= 0,
+      })
+    }
+    return out
   }
 
   function dropPendingRef(sessionId: string, absPath: string): void {
@@ -1428,6 +1489,7 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     // in-flight upload that is rewriting the shared index.
     list: () => listFiles(),
     deleteMany: (args) => enqueue(() => deleteMany(args)),
+    pendingFor: (sessionId) => pendingFor(sessionId),
     collect: () => enqueue(async () => {
       await unfoldOrphanFolders()
       await gcForRoots()
