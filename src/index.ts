@@ -67,7 +67,9 @@ export function apply(ctx: PluginContext): void {
   //   foldThreshold    send-time fold threshold; 2..100, default 100
   //   skipLocalUpload  reference Desktop local files instead of uploading
   //                    (default true; Desktop-only feature, off forces upload)
-  let runtimeConfig = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100, skipLocalUpload: true }
+  //   skipNativeImages never inject images as native image blocks; every image
+  //                    is injected as an ordinary file path (default false)
+  let runtimeConfig = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100, skipLocalUpload: true, skipNativeImages: false }
   const readConfigFile = (): Record<string, unknown> | null => {
     try {
       const text = existsSync(configPath()) ? readFileSync(configPath(), 'utf8') : ''
@@ -91,7 +93,7 @@ export function apply(ctx: PluginContext): void {
     if (!Number.isFinite(n)) return undefined
     return Math.max(2, Math.min(100, Math.floor(n)))
   }
-  const getConfig = (): { ttl: string; replaceOfficial: boolean; alwaysShowButton: boolean; maxFiles: number; foldThreshold: number; skipLocalUpload: boolean } => {
+  const getConfig = (): { ttl: string; replaceOfficial: boolean; alwaysShowButton: boolean; maxFiles: number; foldThreshold: number; skipLocalUpload: boolean; skipNativeImages: boolean } => {
     const fromFile = readConfigFile()
     let ttl = fromFile && typeof fromFile.ttl === 'string' && fromFile.ttl !== '' ? fromFile.ttl : undefined
     if (ttl === undefined && process.env && process.env.DSH_UPLOAD_TTL) ttl = process.env.DSH_UPLOAD_TTL
@@ -105,18 +107,22 @@ export function apply(ctx: PluginContext): void {
     const skipLocalUpload = fromFile && typeof fromFile.skipLocalUpload === 'boolean'
       ? fromFile.skipLocalUpload
       : runtimeConfig.skipLocalUpload
+    const skipNativeImages = fromFile && typeof fromFile.skipNativeImages === 'boolean'
+      ? fromFile.skipNativeImages
+      : runtimeConfig.skipNativeImages
     const maxFiles = clampMaxFiles(fromFile && fromFile.maxFiles) ?? runtimeConfig.maxFiles
     const foldThreshold = clampFoldThreshold(fromFile && fromFile.foldThreshold) ?? runtimeConfig.foldThreshold
-    return { ttl, replaceOfficial, alwaysShowButton, maxFiles, foldThreshold, skipLocalUpload }
+    return { ttl, replaceOfficial, alwaysShowButton, maxFiles, foldThreshold, skipLocalUpload, skipNativeImages }
   }
   // Partial update: a caller that only knows about one field must not clear the
   // other, so the patch is merged over the resolved config.
-  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number; foldThreshold?: number; skipLocalUpload?: boolean }): void => {
+  const setConfig = (patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number; foldThreshold?: number; skipLocalUpload?: boolean; skipNativeImages?: boolean }): void => {
     const next = getConfig()
     if (patch && patch.ttl != null) next.ttl = String(patch.ttl).trim()
     if (patch && typeof patch.replaceOfficial === 'boolean') next.replaceOfficial = patch.replaceOfficial
     if (patch && typeof patch.alwaysShowButton === 'boolean') next.alwaysShowButton = patch.alwaysShowButton
     if (patch && typeof patch.skipLocalUpload === 'boolean') next.skipLocalUpload = patch.skipLocalUpload
+    if (patch && typeof patch.skipNativeImages === 'boolean') next.skipNativeImages = patch.skipNativeImages
     const clampedMaxFiles = clampMaxFiles(patch ? patch.maxFiles : undefined)
     if (clampedMaxFiles !== undefined) next.maxFiles = clampedMaxFiles
     const clampedFold = clampFoldThreshold(patch ? patch.foldThreshold : undefined)
@@ -628,11 +634,12 @@ export function apply(ctx: PluginContext): void {
           } catch {
             parsed = {}
           }
-          const patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number; foldThreshold?: number; skipLocalUpload?: boolean } = {}
+          const patch: { ttl?: string; replaceOfficial?: boolean; alwaysShowButton?: boolean; maxFiles?: number; foldThreshold?: number; skipLocalUpload?: boolean; skipNativeImages?: boolean } = {}
           if (parsed.ttl != null) patch.ttl = String(parsed.ttl)
           if (typeof parsed.replaceOfficial === 'boolean') patch.replaceOfficial = parsed.replaceOfficial
           if (typeof parsed.alwaysShowButton === 'boolean') patch.alwaysShowButton = parsed.alwaysShowButton
           if (typeof parsed.skipLocalUpload === 'boolean') patch.skipLocalUpload = parsed.skipLocalUpload
+          if (typeof parsed.skipNativeImages === 'boolean') patch.skipNativeImages = parsed.skipNativeImages
           if (parsed.maxFiles != null) {
             const clamped = clampMaxFiles(parsed.maxFiles)
             if (clamped !== undefined) patch.maxFiles = clamped

@@ -68,6 +68,8 @@ Injection is distinguished by model capability:
 | **Multimodal** (reported `inputModalities` includes `image`) | Native `ImageBlock` via the attachments service, the image becomes part of the request like a normal attachment, with **no extra prompt text** | Path text block |
 | **Text-only** (e.g. DeepSeek V4 series) | Path text block (the model can still call vision tools to parse it) | Path text block |
 
+Note that if you also want an image to reach a natively image-capable model as a plain text path instead, so the model can process it beforehand and then read it, turn on the "Images bypass the native pipeline" option in the plugin's settings page and save.
+
 The capability check uses `llm.resolveModelInfo().inputModalities` (cached for 10 minutes, safe text-only fallback).
 
 The injected prompt uses a readable, **English-only format for the model to read**:

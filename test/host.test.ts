@@ -28,7 +28,7 @@ const ROOT = join(tmpdir(), 'dfu-host-core-test')
 rmSync(ROOT, { recursive: true, force: true })
 mkdirSync(ROOT + '/uploads', { recursive: true })
 
-let cfg: { ttl: string; foldThreshold?: number } = { ttl: '7d' }
+let cfg: { ttl: string; foldThreshold?: number; skipNativeImages?: boolean } = { ttl: '7d' }
 const core = createHostCore({
   uploadsRoot: async () => ROOT,
   ensureDir: async (d) => { mkdirSync(d, { recursive: true }) },
@@ -280,6 +280,45 @@ const imageFolderContents = foldFolderNames()
   .map((n) => readdirSync(uploadsPath + '/' + n).sort().join(','))
 ok('native images do not move into the fold folder', imageFolderContents.every((c) => !c.includes('pic-a.png') && !c.includes('pic-b.png')), imageFolderContents)
 ok('the two text files still folded', imageFolderContents.some((c) => c.includes('img-text-a.txt') && c.includes('img-text-b.txt')), imageFolderContents)
+
+// The "images bypass the native pipeline" switch (default off): on, an image is
+// handled exactly like an ordinary file even for a multimodal model — its path
+// is injected as text, it joins the fold group, and no image block is built.
+cfg = { ttl: '7d', foldThreshold: 100, skipNativeImages: true }
+const S_IMG_PATH = 'sess-images-as-paths'
+// Distinct bytes per image: identical content would dedup onto one stored path
+// and hide which card each injected line belongs to.
+const imageBytes = (seed: number): Buffer => Buffer.concat([png, Buffer.from([seed])])
+for (const [name, seed] of [['path-pic-a.png', 1], ['path-pic-b.png', 2]] as const) {
+  const bytes = imageBytes(seed)
+  const begun = await core.beginStream({ sessionId: S_IMG_PATH, name, mime: 'image/png', size: bytes.length })
+  if (begun.ok && begun.tempPath && begun.id) {
+    writeFileSync(begun.tempPath, bytes)
+    await core.commitStream({ id: begun.id, sha256: createHash('sha256').update(bytes).digest('hex') })
+  }
+}
+await streamUpload(core, S_IMG_PATH, 'path-note.txt', 'text/plain', 'path-note')
+const pathOnlyDecision = await runPreStep(S_IMG_PATH, 'fake-provider', 'multimodal-model')
+const pathOnlyBlocks = decisionContent(pathOnlyDecision).filter((b) => b.type === 'image')
+ok('with the switch on a multimodal model gets no image block', pathOnlyBlocks.length === 0, pathOnlyBlocks.length)
+const pathOnlyText = injectText(pathOnlyDecision)
+ok('with the switch on the image path is injected as text', pathOnlyText.includes('path-pic-a.png') && pathOnlyText.includes('path-pic-b.png'), pathOnlyText)
+ok('with the switch on the ordinary file is injected too', pathOnlyText.includes('path-note.txt'), pathOnlyText)
+for (const row of await core.pendingFor(S_IMG_PATH)) await core.remove({ sessionId: S_IMG_PATH, path: row.path, id: row.id })
+cfg = { ttl: '7d', foldThreshold: 2, skipNativeImages: true }
+const S_IMG_FOLD = 'sess-images-fold-as-paths'
+for (const [name, seed] of [['fold-pic-a.png', 11], ['fold-pic-b.png', 12]] as const) {
+  const bytes = imageBytes(seed)
+  const begun = await core.beginStream({ sessionId: S_IMG_FOLD, name, mime: 'image/png', size: bytes.length })
+  if (begun.ok && begun.tempPath && begun.id) {
+    writeFileSync(begun.tempPath, bytes)
+    await core.commitStream({ id: begun.id, sha256: createHash('sha256').update(bytes).digest('hex') })
+  }
+}
+const pathFoldDecision = await runPreStep(S_IMG_FOLD, 'fake-provider', 'multimodal-model')
+ok('with the switch on images count toward the fold threshold', injectText(pathFoldDecision).includes('2 uploaded files in this folder'), injectText(pathFoldDecision))
+ok('with the switch on no image block is built by the fold path', decisionContent(pathFoldDecision).every((b) => b.type !== 'image'))
+for (const row of await core.pendingFor(S_IMG_FOLD)) await core.remove({ sessionId: S_IMG_FOLD, path: row.path, id: row.id })
 
 // A dedup card shares the file a fold is about to move; its injected path must
 // follow the move instead of going stale on the old root path.

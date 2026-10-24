@@ -8,7 +8,7 @@
 //   upload(args)       Promise<result>   { sessionId, name, mime, file }
 //   remove(args)       Promise<void>     { sessionId, path }
 //   delete(args)       Promise<void>     { sessionId, path }
-//   configGet()        Promise<config>   { ttl, replaceOfficial, alwaysShowButton }
+//   configGet()        Promise<config>   { ttl, replaceOfficial, alwaysShowButton, skipNativeImages, … }
 //   configSet(cfg)     Promise<config>
 //   filesList()        Promise<{ files }>          settings-panel inventory
 //   deleteMany(args)   Promise<result>   { sessionId, paths }
@@ -165,6 +165,9 @@ export interface DfuConfig {
   foldThreshold?: number
   /** Reference local files instead of uploading them (default on; Desktop). */
   skipLocalUpload?: boolean
+  /** Never inject images as native image blocks; send their paths as ordinary
+   *  files instead (default off). */
+  skipNativeImages?: boolean
 }
 
 /** One row of the settings "manage files" inventory (mirrors the host core). */
@@ -462,6 +465,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       alwaysShowHint: '开启时输入框旁始终显示本插件按钮。关闭后，若同时开启「替代官方添加文件入口」，输入框旁不再显示按钮，上传入口只保留在菜单里；未开启替代时按钮仍会显示，避免无处上传。',
       skipLocalUpload: '本地文件跳过上传',
       skipLocalUploadHint: '默认开启，仅桌面版支持：桌面版能提供宿主路径的文件直接本地引用、零上传。浏览器版始终上传，不受此开关影响；关闭后即使可本地引用也按普通文件上传。',
+      skipNativeImages: '图片不注入原生管道',
+      skipNativeImagesHint: '默认关闭。开启后即使当前模型本身支持识图，图片也一律按普通文件处理：只注入图片文件的绝对路径，而不转成请求中的原生图片块。这样你可以要求模型先对图片做处理（例如压缩、裁剪、转格式）再读取，或交给别的识图工具解析。',
       menuFileLabel: '文件',
       cancelling: '正在取消…',
       cancelTitle: '取消上传？',
@@ -546,6 +551,8 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
       alwaysShowHint: 'On shows this plugin’s button beside the input box at all times. Off hides it whenever “Replace the official add-file entry” is on, leaving the menu as the only upload entry; with replacement off the button still shows so an entry always exists.',
       skipLocalUpload: 'Skip upload for local files',
       skipLocalUploadHint: 'On by default and Desktop only: the Desktop shell reports real host paths, so those files are referenced in place with no upload. The browser web UI always uploads and ignores this switch; off uploads every file, even when a host path is available.',
+      skipNativeImages: 'Images bypass the native pipeline',
+      skipNativeImagesHint: 'Off by default. On, an image is handled exactly like any other file even when the current model can read images: only its absolute path is injected instead of a native image block in the request. That lets you ask the model to process the image first (compress, crop, convert) and then read it, or to hand it to a separate vision tool.',
       menuFileLabel: 'File',
       cancelling: 'Cancelling…',
       cancelTitle: 'Cancel this upload?',
@@ -1990,6 +1997,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     const [replaceOn, setReplaceOn] = react.useState(false)
     const [alwaysShowOn, setAlwaysShowOn] = react.useState(true)
     const [skipLocalOn, setSkipLocalOn] = react.useState(true)
+    const [skipNativeOn, setSkipNativeOn] = react.useState(false)
     const [maxFiles, setMaxFiles] = react.useState('100')
     const [foldThreshold, setFoldThreshold] = react.useState('100')
     const [status, setStatus] = react.useState('') // '' | 'saving' | 'saved' | 'error'
@@ -2003,6 +2011,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
             setReplaceOn(r.replaceOfficial === true)
             setAlwaysShowOn(r.alwaysShowButton !== false)
             setSkipLocalOn(r.skipLocalUpload !== false)
+            setSkipNativeOn(r.skipNativeImages === true)
             if (r.maxFiles != null) setMaxFiles(String(r.maxFiles))
             if (r.foldThreshold != null) setFoldThreshold(String(r.foldThreshold))
           })
@@ -2043,6 +2052,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         replaceOfficial: replaceOn,
         alwaysShowButton: alwaysShowOn,
         skipLocalUpload: skipLocalOn,
+        skipNativeImages: skipNativeOn,
         maxFiles: clampMaxFiles(maxFiles),
         foldThreshold: clampFoldThreshold(foldThreshold),
       })
@@ -2060,9 +2070,11 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
           const nextReplace = r && typeof r.replaceOfficial === 'boolean' ? r.replaceOfficial : replaceOn
           const nextAlwaysShow = r && typeof r.alwaysShowButton === 'boolean' ? r.alwaysShowButton : alwaysShowOn
           const nextSkipLocal = r && typeof r.skipLocalUpload === 'boolean' ? r.skipLocalUpload : skipLocalOn
+          const nextSkipNative = r && typeof r.skipNativeImages === 'boolean' ? r.skipNativeImages : skipNativeOn
           setReplaceOn(nextReplace)
           setAlwaysShowOn(nextAlwaysShow)
           setSkipLocalOn(nextSkipLocal)
+          setSkipNativeOn(nextSkipNative)
           // Settings can be open with the composer unmounted, so the saved values
           // are applied to whatever is on screen now and to the next mount.
           applyUploadEntrySettings(nextReplace, nextAlwaysShow)
@@ -2131,6 +2143,24 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
         ),
       ),
       react.createElement('div', { className: 'dfu-settings-hint' }, tFn('skipLocalUploadHint')),
+      react.createElement(
+        'div',
+        { className: 'dfu-settings-toggle' },
+        react.createElement('span', { className: 'dfu-settings-toggle-label' }, tFn('skipNativeImages')),
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': skipNativeOn,
+            'aria-label': tFn('skipNativeImages'),
+            className: 'dfu-switch',
+            onClick: () => setSkipNativeOn(!skipNativeOn),
+          },
+          react.createElement('span', { className: 'dfu-switch-thumb' }),
+        ),
+      ),
+      react.createElement('div', { className: 'dfu-settings-hint' }, tFn('skipNativeImagesHint')),
       react.createElement(
         'div',
         { className: 'dfu-settings-row dfu-settings-stepper' },

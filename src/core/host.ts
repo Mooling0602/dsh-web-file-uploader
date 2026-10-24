@@ -75,7 +75,13 @@ export interface HostCoreDeps {
   listDir?(absDir: string): Promise<string[] | null>
   /** Remove an empty directory (best effort). */
   removeDir?(absDir: string): Promise<boolean>
-  readConfig?(): { ttl?: string; ttlDays?: number; foldThreshold?: number } | null
+  readConfig?(): {
+    ttl?: string
+    ttlDays?: number
+    foldThreshold?: number
+    /** Inject every image as an ordinary file path, never as a native image block. */
+    skipNativeImages?: boolean
+  } | null
   resolveModelInfo?(
     provider: string | undefined,
     model: string | undefined,
@@ -1064,6 +1070,25 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
     return Math.max(2, Math.min(100, Math.floor(n)))
   }
 
+  /**
+   * "Never inject images through the native pipeline" (default off). On, an
+   * image the model could take natively is handled exactly like any other file:
+   * its absolute path goes into the injected text instead of an image block, so
+   * the model can pre-process it (compress, crop, convert) before reading it.
+   * Off keeps the native block for multimodal models, which is the default the
+   * rest of this file describes.
+   */
+  const skipNativeImages = (): boolean => {
+    if (typeof deps.readConfig !== 'function') return false
+    try {
+      const cfg = deps.readConfig()
+      if (cfg && typeof cfg === 'object') return (cfg as { skipNativeImages?: unknown }).skipNativeImages === true
+    } catch {
+      // ignore malformed config
+    }
+    return false
+  }
+
   /** Local-time batch stamp: YYYY-MM-DD-hh-mm-ss. */
   const stampNow = (): string => {
     const d = new Date()
@@ -1456,12 +1481,19 @@ export function createHostCore(deps: HostCoreDeps): HostCore {
 
       const multimodal = await supportsImages(agent.options && agent.options.provider, agent.options && agent.options.model, payload.signal)
       const limits = deps.attachmentLimits ? deps.attachmentLimits() : null
+      // "Images never use the native pipeline" (default off): with it on, the
+      // capability check below is forced negative, so every image is handled
+      // exactly like an ordinary file — an absolute path in the injected text and
+      // normal fold/group membership. That is what lets the user ask the model to
+      // pre-process the image (compress, crop, convert) before reading it; a
+      // native image block would already be pixels by the time the turn starts.
+      const useNativeImages = multimodal && !skipNativeImages()
       // An image that becomes a native image block never appears in the injected
       // path text, so it neither counts toward the fold threshold nor moves into
       // the fold folder; only images the model cannot take natively join a
       // group and fold like ordinary attachments.
       const nativeImage = (entry: PendingEntry): boolean =>
-        limits !== null && multimodal && limits.mediaTypes.includes(entry.mime) &&
+        limits !== null && useNativeImages && limits.mediaTypes.includes(entry.mime) &&
         entry.size <= limits.maxImageBytes && !!deps.saveImage && !!deps.readBytes
 
       const countables = row.filter((entry) => !nativeImage(entry))

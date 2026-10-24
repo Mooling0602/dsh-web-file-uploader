@@ -123,6 +123,7 @@ let configResult: Record<string, unknown> = {
   maxFiles: 100,
   foldThreshold: 100,
   skipLocalUpload: true,
+  skipNativeImages: false,
 }
 
 const core = createClientCore({
@@ -139,6 +140,7 @@ const core = createClientCore({
       replaceOfficial: cfg.replaceOfficial === true,
       alwaysShowButton: cfg.alwaysShowButton !== false,
       skipLocalUpload: cfg.skipLocalUpload !== false,
+      skipNativeImages: cfg.skipNativeImages === true,
       maxFiles: cfg.maxFiles,
       foldThreshold: cfg.foldThreshold,
     }
@@ -281,7 +283,7 @@ ok('row becomes selectable again', byClass(tree, 'dfu-manage-row-locked').length
 // ---- upload-entry switches ----
 tree = await mount()
 const switches = () => byClass(tree, 'dfu-switch')
-ok('three settings switches render', switches().length === 3, switches().length)
+ok('four settings switches render', switches().length === 4, switches().length)
 ok('replace switch is labelled for the add-file entry',
   byClass(tree, 'dfu-settings-toggle-label').some(n => textOf(n) === dicts.zh.replaceOfficial),
   byClass(tree, 'dfu-settings-toggle-label').map(textOf))
@@ -313,6 +315,35 @@ const saveSkip = byClass(tree, 'dfu-settings-save').find((n) => n.props!.classNa
 ;(saveSkip!.props!.onClick as () => void)()
 await new Promise((r) => setTimeout(r, 0))
 ok('save sends the skip-upload setting off', (savedConfig as Record<string, unknown> | null)?.skipLocalUpload === false, savedConfig)
+
+// ---- the "images bypass the native pipeline" switch ----
+// Default off: multimodal models keep receiving native image blocks. Turning it
+// on must reach the host, and a host that already has it on must render as on.
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100, skipLocalUpload: true, skipNativeImages: true }
+tree = await mount()
+const nativeSwitch = () => switches().find(s => s.props!['aria-label'] === dicts.zh.skipNativeImages)
+ok('native-image switch exists', nativeSwitch() !== undefined)
+ok('native-image switch reads the configured value', nativeSwitch()?.props!['aria-checked'] === true, nativeSwitch()?.props!['aria-checked'])
+ok('native-image switch is labelled in both dictionaries', dicts.zh.skipNativeImages === '图片不注入原生管道' && dicts.en.skipNativeImages.length > 0, dicts.en.skipNativeImages)
+ok('the hint explains it applies to image-capable models too', dicts.zh.skipNativeImagesHint.includes('识图'), dicts.zh.skipNativeImagesHint)
+;(nativeSwitch()!.props!.onClick as () => void)()
+tree = draw()
+ok('native-image switch toggles off', nativeSwitch()?.props!['aria-checked'] === false, nativeSwitch()?.props!['aria-checked'])
+const saveNativeOff = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveNativeOff!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('save sends the native-image setting off', (savedConfig as Record<string, unknown> | null)?.skipNativeImages === false, savedConfig)
+;(nativeSwitch()!.props!.onClick as () => void)()
+tree = draw()
+const saveNativeOn = byClass(tree, 'dfu-settings-save').find((n) => n.props!.className === 'dfu-settings-save')
+;(saveNativeOn!.props!.onClick as () => void)()
+await new Promise((r) => setTimeout(r, 0))
+ok('save sends the native-image setting on', (savedConfig as Record<string, unknown> | null)?.skipNativeImages === true, savedConfig)
+// An older host that does not know the field must not flip the switch back.
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100 }
+tree = await mount()
+ok('a host without the field defaults the switch off', nativeSwitch()?.props!['aria-checked'] === false, nativeSwitch()?.props!['aria-checked'])
+configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 100, foldThreshold: 100, skipLocalUpload: true, skipNativeImages: false }
 
 // ---- max-files stepper ----
 configResult = { ttl: '7d', replaceOfficial: false, alwaysShowButton: true, maxFiles: 7, foldThreshold: 30 }
