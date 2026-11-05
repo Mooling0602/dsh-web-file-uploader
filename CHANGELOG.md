@@ -25,6 +25,16 @@ Notice that CI is not responsible for editing the old version's release note, it
 
 **full_changelog!**
 
+## 1.0.0-rc.3
+
+### Features
+
+- Add the "Images bypass the native pipeline" option (default off): with it on, an image the model could take natively is handled exactly like any other file — its absolute path goes into the injected text instead of an image block — so the model can pre-process it (compress, crop, convert) before reading it, in commit e6df8ab.
+
+### Fixes
+
+- Stop the settings tab from drawing two glyphs on dsh 0.2.2-rc.1 and later: that shell wraps the nav glyph in a span and mounts the new `settings.section.icon` slot inside it, so the fallback gear is no longer a direct child of the nav cell, the old sibling walk found nothing and the paperclip was inserted beside the gear instead of replacing it. The mark now prefers the slot where the shell declares it and keeps the DOM path for older shells, with a flag that keeps the two from ever both drawing, in commit 521e6c7.
+
 ## 1.0.0-rc.2
 
 ### Features
