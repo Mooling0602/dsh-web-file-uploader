@@ -397,12 +397,20 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
 
   const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
-  // Settings-nav mark. The shell paints the settings nav from a fixed id→icon
-  // map and falls back to the plain gear for every id it does not know, so a
-  // plugin cannot declare its own glyph through the slot. The nav row
-  // therefore gets the same paperclip the composer button shows — same path,
-  // same transform, same viewBox and same rendered size, so the two are one
-  // drawing in two places (see installSettingsNavMark).
+  // Settings-nav mark. Two shells, two carriers, exactly one active at a time:
+  //
+  //   - 0.2.2-rc.1 and later declare a `settings.section.icon` slot, so the
+  //     glyph is registered there and the shell renders it in the nav cell
+  //     itself (see SettingsNavIcon and the `settings.section.icon`
+  //     registration in apply).
+  //   - Older shells paint the nav from a fixed id→icon map with the plain
+  //     gear as fallback, and project only id/order/label, so a plugin has no
+  //     field to declare a glyph. There the row is upgraded in the DOM instead
+  //     (see installSettingsNavMark).
+  //
+  // Either way the row shows the same paperclip the composer button shows —
+  // same path, same transform, same viewBox and same rendered size, so the two
+  // are one drawing in two places.
   //
   // Artwork revision of that mark. A live page that hot-swaps this bundle
   // keeps the mark the previous revision inserted (React does not own the
@@ -922,6 +930,33 @@ export function createClientCore(deps: ClientCoreDeps): ClientCore {
         viewBox: PAPERCLIP_VIEW_BOX,
         fill: 'none',
         'aria-hidden': 'true',
+      },
+      react.createElement('path', {
+        d: PAPERCLIP_PATH,
+        fill: 'currentColor',
+        transform: PAPERCLIP_TRANSFORM,
+      }),
+    )
+  }
+
+  // The settings-nav glyph for shells that declare `settings.section.icon`
+  // (0.2.2-rc.1+). Same drawing and same numbers as the composer button, so the
+  // nav mark and the composer mark stay one drawing at two scales — the plain
+  // React counterpart of the node installSettingsNavMark builds for older
+  // shells. The accent while the section is open is pure CSS (see
+  // .dfu-nav-mark-slot), driven by the cell's aria-current like the DOM one.
+  function SettingsNavIcon(props: { size?: number }) {
+    const size = typeof props?.size === 'number' ? props.size : 16
+    return react.createElement(
+      'svg',
+      {
+        width: size,
+        height: size,
+        viewBox: PAPERCLIP_VIEW_BOX,
+        fill: 'none',
+        'aria-hidden': 'true',
+        className: 'dfu-nav-mark-slot',
+        'data-dfu-mark': 'settings-nav-slot',
       },
       react.createElement('path', {
         d: PAPERCLIP_PATH,
@@ -1926,6 +1961,11 @@ body[data-ds-dark-theme] .dfu-settings-save { color: #000; }
    centred on the column and leaves every sibling row's label offset unchanged. */
 .dfu-nav-mark { flex: none; margin: calc((16px - 17.24px) / 2); }
 nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek-450, #5686fe); }
+/* Slot-carried variant (0.2.2-rc.1+): the shell wraps it in its own 16px icon
+   span, so it only needs the same overhang trim to stay on the icon column.
+   The accent follows the cell's aria-current exactly like the DOM mark. */
+.dfu-nav-mark-slot { display: block; margin: calc((16px - 17.24px) / 2); }
+nav button[aria-current='true'] .dfu-nav-mark-slot { color: var(--dsw-static-deepseek-450, #5686fe); }
 
 /* Manage-files panel. Rows are labels so the whole row toggles the checkbox;
    the list scrolls on its own because the settings column already scrolls. */
@@ -2514,7 +2554,14 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
   // reads as this plugin at a glance instead of as a second "General". The
   // glyph is monochrome at rest and only takes the accent while the section is
   // open — a pure CSS state, driven by the cell's aria-current.
-  function installSettingsNavMark() {
+  //
+  // Legacy path only. Shells from 0.2.2-rc.1 wrap the nav glyph in a
+  // `<span class="navIcon">` and mount the `settings.section.icon` slot inside
+  // it, so the shell svg is no longer a direct child of the cell: the sibling
+  // walk below finds nothing and this whole pass becomes a no-op there. The
+  // slot registration is what draws the mark on those shells (see
+  // SettingsNavIcon), and `slotMarkOwns` keeps the two from ever both firing.
+  function installSettingsNavMark(isSuperseded: () => boolean) {
     if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return null
     const NS = 'http://www.w3.org/2000/svg'
     // The shell icons this instance hid, so a teardown can hand them back.
@@ -2541,7 +2588,23 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       svg.appendChild(path)
       return svg
     }
+    // Hand the shell its own glyph back and drop ours. Used both by the unload
+    // path and by the moment the slot takes over, so a shell that grows the
+    // slot mid-session never keeps a stale node from this path.
+    const retreat = () => {
+      const marks = document.querySelectorAll('[data-dfu-mark="settings-nav"]')
+      for (let i = 0; i < marks.length; i += 1) marks[i].remove()
+      hidden.forEach((icon) => {
+        icon.style.display = ''
+      })
+      hidden.clear()
+    }
     const patch = () => {
+      // The slot owns the mark on this shell; never paint a second one.
+      if (isSuperseded()) {
+        retreat()
+        return
+      }
       const label = tFn('settingsTitle')
       const cells = document.querySelectorAll<HTMLElement>('nav button')
       for (let i = 0; i < cells.length; i += 1) {
@@ -2598,12 +2661,7 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
     // with the gear underneath still suppressed.
     return () => {
       observer.disconnect()
-      const marks = document.querySelectorAll('[data-dfu-mark="settings-nav"]')
-      for (let i = 0; i < marks.length; i += 1) marks[i].remove()
-      hidden.forEach((icon) => {
-        icon.style.display = ''
-      })
-      hidden.clear()
+      retreat()
     }
   }
 
@@ -2840,7 +2898,38 @@ nav button[aria-current='true'] .dfu-nav-mark { color: var(--dsw-static-deepseek
       }
     }
     insertStyles(CSS)
-    const teardownNavMark = installSettingsNavMark()
+    // Does this shell carry the glyph through `settings.section.icon`?
+    //
+    // Only shells from 0.2.2-rc.1 declare that slot; older ones project just
+    // id/order/label and paint a fixed id→icon map. `slots.inject` only runs its
+    // callback once the slot is actually declared, so the flag stays false and
+    // no registration is attempted where the slot does not exist — registering
+    // an undeclared slot throws, so this must not be an unconditional register.
+    // The DOM path consults the flag so the two carriers are mutually exclusive.
+    let slotMarkOwns = false
+    // Claim the icon seat before the DOM path runs below, so its first scan
+    // already sees the flag set on a shell that has the slot and never paints a
+    // second glyph, not even for one frame.
+    //
+    // The shell pairs this entry with the `settings.section` of the same id and
+    // renders it as the nav glyph in place of its own fallback gear. `label` is
+    // required by the list-slot shape but unread for an icon seat.
+    //
+    // Taken on the same terms as the DOM mark so the row still shows one glyph
+    // if either side fails: the flag flips only after the registration lands,
+    // and the disposer flips it back so a re-declaration re-arms the DOM path.
+    slots.inject('settings.section.icon', () => {
+      const off = slots.register(
+        { name: 'settings.section.icon', id: 'dfu-settings', label: () => tFn('settingsTitle'), inject: () => ({}) },
+        (props) => react.createElement(SettingsNavIcon, props as { size?: number } | undefined),
+      )
+      slotMarkOwns = true
+      return () => {
+        slotMarkOwns = false
+        if (typeof off === 'function') off()
+      }
+    })
+    const teardownNavMark = installSettingsNavMark(() => slotMarkOwns)
     installComposerLayout()
     installCommandEntry(ctx)
     if (typeof ctx.effect === 'function') {

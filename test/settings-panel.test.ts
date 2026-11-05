@@ -103,11 +103,19 @@ const react = {
 }
 
 interface Captured { meta: unknown; render: () => unknown }
-const captured: Record<string, Captured> = {}
+// Keyed by slot `name` and then `id`, because two different slots legitimately
+// share one entry id: the shell pairs `settings.section.icon` with the
+// `settings.section` of the same id. Keying by id alone would let the icon
+// registration overwrite the section registration.
+const captured: Record<string, Record<string, Captured>> = {}
 const dicts: { zh: Record<string, string>; en: Record<string, string> } = { zh: {}, en: {} }
 const slots = {
   inject: (_name: string, fn: () => void) => { fn() },
-  register: (meta: { id: string }, render: () => unknown) => { captured[meta.id] = { meta, render }; return { dispose() {} } },
+  register: (meta: { name: string; id: string }, render: () => unknown) => {
+    const byId = captured[meta.name] ?? (captured[meta.name] = {})
+    byId[meta.id] = { meta, render }
+    return { dispose() {} }
+  },
 }
 const locale = {
   register: (_ns: string, lang: string, dict: Record<string, string>) => { for (const k of Object.keys(dict)) dicts[lang as 'zh' | 'en'][k] = dict[k] },
@@ -155,13 +163,13 @@ const ctx = {
   on: () => {},
 }
 core.apply(ctx as unknown as PluginContext)
-if (!captured['dfu-settings']) { console.error('settings slot never registered'); process.exit(2) }
+if (!captured['settings.section']?.['dfu-settings']) { console.error('settings slot never registered'); process.exit(2) }
 
 let pass = 0, fail = 0
 const out: string[] = []
 const ok = (n: string, c: unknown, x?: unknown) => { if (c) { pass++; out.push('PASS  ' + n) } else { fail++; out.push('FAIL  ' + n + (x !== undefined ? '  <- ' + JSON.stringify(x) : '')) } }
 
-const el = captured['dfu-settings'].render as () => unknown
+const el = captured['settings.section']['dfu-settings'].render as () => unknown
 
 const pass1 = () => {
   for (const [comp, updates] of pendingByComp) {
@@ -406,6 +414,25 @@ ok('en hint mentions restart', dicts.en.manageInUseHint.toLowerCase().includes('
 const zhKeys = Object.keys(dicts.zh).sort(), enKeys = Object.keys(dicts.en).sort()
 ok('zh and en have identical key sets', JSON.stringify(zhKeys) === JSON.stringify(enKeys), zhKeys.filter((k) => !enKeys.includes(k)).concat(enKeys.filter((k) => !zhKeys.includes(k))))
 ok('en notice has no literal escape sequence', !dicts.en.manageInUseNotice.includes('\\u'))
+
+// ---- settings-nav glyph: the slot carrier ----
+//
+// The shell declares `settings.section.icon` from dsh 0.2.2-rc.1 and pairs it
+// with the `settings.section` of the same id, so this harness (whose `inject`
+// runs the factory unconditionally, like a shell that declares the slot) must
+// see the icon entry registered under the very same id as the section.
+const navIcon = captured['settings.section.icon']?.['dfu-settings']
+ok('the nav glyph registers into settings.section.icon', navIcon !== undefined, Object.keys(captured['settings.section.icon'] ?? {}))
+ok('the nav glyph shares the section id, so the shell can pair them', Object.keys(captured['settings.section.icon'] ?? {})[0] === Object.keys(captured['settings.section'])[0])
+const glyph = navIcon?.render as ((p: unknown) => unknown) | undefined
+const glyphTree = glyph?.({ size: 16 }) as FakeNode | undefined
+ok('the glyph is an svg', glyphTree?.type === 'svg', glyphTree?.type)
+ok('the glyph carries the paperclip path', ((glyphTree?.kids?.[0] as FakeNode)?.props as Record<string, unknown> | undefined)?.d === 'M5.5498 9.75V5H6.9502V9.75C6.9502 10.3299 7.4201 10.7998 8 10.7998C8.5799 10.7998 9.0498 10.3299 9.0498 9.75V4.5C9.0498 2.9536 7.7964 1.7002 6.25 1.7002C4.7036 1.7002 3.4502 2.9536 3.4502 4.5V9.75C3.4502 12.2629 5.4871 14.2998 8 14.2998C10.5129 14.2998 12.5498 12.2629 12.5498 9.75V4H13.9502V9.75C13.9502 13.0361 11.2861 15.7002 8 15.7002C4.71391 15.7002 2.0498 13.0361 2.0498 9.75V4.5C2.04981 2.1804 3.9304 0.299806 6.25 0.299805C8.5696 0.299805 10.4502 2.1804 10.4502 4.5V9.75C10.4502 11.1031 9.3531 12.2002 8 12.2002C6.6469 12.2002 5.5498 11.1031 5.5498 9.75Z')
+ok('the glyph is hidden from assistive tech', (glyphTree?.props as Record<string, unknown> | undefined)?.['aria-hidden'] === 'true')
+ok('the glyph honours the shell size', (glyphTree?.props as Record<string, unknown> | undefined)?.width === 16, (glyphTree?.props as Record<string, unknown> | undefined)?.width)
+const sized = glyph?.({ size: 20 }) as FakeNode | undefined
+ok('the glyph follows a non-default size', (sized?.props as Record<string, unknown> | undefined)?.width === 20, (sized?.props as Record<string, unknown> | undefined)?.width)
+ok('the glyph falls back to 16 when the shell passes no size', ((glyph?.({}) as FakeNode)?.props as Record<string, unknown> | undefined)?.width === 16)
 
 console.log(out.join('\n'))
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

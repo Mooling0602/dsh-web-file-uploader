@@ -122,8 +122,16 @@ export interface SlotMeta {
   inject?: () => Record<string, unknown>
 }
 
+/**
+ * The slots service.
+ *
+ * `inject` runs its factory only once the named slot is actually declared by
+ * the shell, so it is the safe way to reach a slot that only newer shells carry
+ * (`settings.section.icon`, first declared in dsh 0.2.2-rc.1). `register` is the
+ * opposite: it throws on an undeclared slot name.
+ */
 export interface SlotsService {
-  inject(name: string, factory: () => void): void
+  inject(name: string, factory: () => unknown): void
   register(meta: SlotMeta, factory: (props: unknown) => unknown): unknown
 }
 
